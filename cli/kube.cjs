@@ -3273,7 +3273,7 @@ function redactLine(line) {
 }
 
 // cli/main.ts
-var VERSION = true ? "0.5.0" : "0.0.0-dev";
+var VERSION = true ? "0.5.1" : "0.0.0-dev";
 var HISTORY = import_node_path4.default.join(stateDir(), "history");
 var session = { yes: false };
 function loadHistory() {

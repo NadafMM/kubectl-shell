@@ -21,7 +21,7 @@
 ```bash
 brew tap NadafMM/tap
 brew install kubectl-shell
-kube --version   # 0.5.0
+kube --version
 ```
 
 Upgrade: `brew update && brew upgrade kubectl-shell`
