@@ -1,0 +1,24 @@
+name: Feature request
+description: Propose a new behavior or improvement
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: Who is this for — interactive user, script, agent?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: I read the threat model and this does not ask for a sandbox or breaking kubectl compatibility
+          required: false

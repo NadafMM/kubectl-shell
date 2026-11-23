@@ -1,0 +1,4 @@
+* text=auto eol=lf
+cli/kube.cjs linguist-generated=true
+*.png binary
+*.gif binary

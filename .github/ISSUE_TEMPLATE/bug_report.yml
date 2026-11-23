@@ -1,0 +1,57 @@
+name: Bug report
+description: Something broke or kube behaved unexpectedly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If this might be a **security** issue, do not file here. See the [security policy](https://github.com/NadafMM/kubectl-shell/security/policy).
+  - type: input
+    id: version
+    attributes:
+      label: kube version
+      placeholder: "e.g. v0.5.0 or commit sha"
+    validations:
+      required: true
+  - type: input
+    id: kubectl_client
+    attributes:
+      label: kubectl version (client)
+      description: Output of `kubectl version --client`
+      placeholder: "e.g. Client Version: v1.31.0"
+    validations:
+      required: true
+  - type: input
+    id: k8s_server
+    attributes:
+      label: Kubernetes server version (optional)
+      description: From `kubectl version` or `kubectl version --short` if you can reach the API
+      placeholder: "e.g. Server Version: v1.30.2"
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - Other
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: expect
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Command line, TTY vs pipe, redacted kube line if needed
+    validations:
+      required: true

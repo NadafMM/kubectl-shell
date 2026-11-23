@@ -1,0 +1,45 @@
+{
+  "name": "kubectl-shell",
+  "description": "Terminal kubectl shell with live Tab completion, plan/ask helpers, and a full-screen resource view.",
+  "version": "0.5.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NadafMM/kubectl-shell.git"
+  },
+  "bugs": {
+    "url": "https://github.com/NadafMM/kubectl-shell/issues"
+  },
+  "homepage": "https://github.com/NadafMM/kubectl-shell#readme",
+  "private": true,
+  "sideEffects": false,
+  "type": "module",
+  "bin": {
+    "kube": "./cli/kube.cjs"
+  },
+  "scripts": {
+    "build": "node scripts/build-cli.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/test-kube.mjs",
+    "coverage": "node scripts/run-coverage.mjs",
+    "docs:check": "node scripts/check-docs.mjs",
+    "e2e:kind": "node scripts/e2e-kind.mjs",
+    "e2e:tty": "python3 scripts/e2e-tty.py",
+    "lint": "eslint .",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.6.6",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.15.0",
+    "eslint-config-prettier": "^10.1.1",
+    "globals": "^17.14.0",
+    "prettier": "^3.10.1",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.56.1"
+  }
+}
