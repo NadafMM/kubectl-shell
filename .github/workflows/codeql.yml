@@ -25,7 +25,6 @@ jobs:
         with:
           languages: javascript-typescript
       - uses: github/codeql-action/autobuild@v3
-      # Private repos without code scanning enabled cannot upload SARIF (analyze would fail at upload).
       - uses: github/codeql-action/analyze@v3
         with:
-          upload: false
+          upload: true
