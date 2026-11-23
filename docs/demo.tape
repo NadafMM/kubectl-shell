@@ -1,4 +1,5 @@
-# Demo GIF for README — recorded against a kind cluster (Task 11).
+# Demo GIF for README — recorded against a kind cluster.
+# Tab uses bash completion from `kube completion` (same engine as the interactive shell).
 Output docs/demo.gif
 
 Set Shell bash
@@ -11,20 +12,32 @@ Set Padding 14
 
 Type "kube --version"
 Enter
-Sleep 1.2s
+Sleep 1s
 
-Type "kube get pods"
+Type `eval "$(kube completion bash)"`
 Enter
-Sleep 2.5s
+Sleep 700ms
 
-Type "echo n | kube plan delete pod nginx-5fdc696c4c-vjm4w"
+# Unique prefix so Tab visibly expands (not a kubectl short name like "po")
+Type "kube get depl"
+Sleep 400ms
+Tab
+Sleep 1.8s
 Enter
-Sleep 2.8s
+Sleep 2.2s
 
-Type "printf q | kube view pods"
+# Ambiguous prefix: Tab lists live matches
+Type "kube get p"
+Sleep 350ms
+Tab
+Sleep 400ms
+Tab
+Sleep 1.8s
+Type "ods"
+Sleep 400ms
 Enter
-Sleep 2.5s
+Sleep 2.2s
 
-Type "kube ask how do I list deployments"
+Type "echo n | kube plan delete pod nginx-5fdc696c4c-6jtwm"
 Enter
-Sleep 3s
+Sleep 2.6s
