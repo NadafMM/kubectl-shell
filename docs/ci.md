@@ -2,20 +2,20 @@
 
 Workflows under `.github/workflows/` run on every PR to `main`.
 
-| Workflow         | Purpose                                                                                                                   |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| **test**         | Node **22** / **24** on Ubuntu; smoke on Ubuntu 22, macOS, and Windows; bundle drift check on Ubuntu 22 only.             |
-| **lint**         | `tsc` + ESLint                                                                                                            |
-| **coverage**     | Node `--experimental-test-coverage` via `npm run coverage`                                                                |
-| **e2e-tty**      | `npm run e2e:tty` on Ubuntu and macOS (Python 3; pty scenarios)                                                           |
-| **e2e-kind**     | kind + real `kubectl`; `npm run e2e:kind`                                                                                 |
-| **e2e-minikube** | Manual (`workflow_dispatch`) only                                                                                         |
-| **audit**        | `npm audit --audit-level=high`                                                                                            |
-| **codeql**       | GitHub CodeQL for JavaScript/TypeScript (analysis only; set `upload: true` after enabling code scanning in repo settings) |
-| **docs**         | `npm run docs:check` when README/docs change                                                                              |
-| **semantic-pr**  | Conventional Commits PR titles                                                                                            |
-| **labeler**      | Auto labels from paths (`.github/labeler.yml`)                                                                            |
-| **release**      | Tag `v*.*.*` → tarball + `cli/kube.cjs` on the GitHub Release, Homebrew tap bump, brew smoke on macOS                     |
+| Workflow         | Purpose                                                                                                       |
+| ---------------- | ------------------------------------------------------------------------------------------------------------- |
+| **test**         | Node **22** / **24** on Ubuntu; smoke on Ubuntu 22, macOS, and Windows; bundle drift check on Ubuntu 22 only. |
+| **lint**         | `tsc` + ESLint                                                                                                |
+| **coverage**     | Node `--experimental-test-coverage` via `npm run coverage`                                                    |
+| **e2e-tty**      | `npm run e2e:tty` on Ubuntu and macOS (Python 3; pty scenarios)                                               |
+| **e2e-kind**     | kind + real `kubectl`; `npm run e2e:kind`                                                                     |
+| **e2e-minikube** | Manual (`workflow_dispatch`) only                                                                             |
+| **audit**        | `npm audit --audit-level=high`                                                                                |
+| **codeql**       | GitHub CodeQL for JavaScript/TypeScript; uploads SARIF to code scanning                                       |
+| **docs**         | `npm run docs:check` when README/docs change                                                                  |
+| **semantic-pr**  | Conventional Commits PR titles                                                                                |
+| **labeler**      | Auto labels from paths (`.github/labeler.yml`)                                                                |
+| **release**      | Tag `v*.*.*` → tarball + `cli/kube.cjs` on the GitHub Release, Homebrew tap bump, brew smoke on macOS         |
 
 ## Local commands
 

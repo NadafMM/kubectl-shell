@@ -2,6 +2,7 @@
 
 [![MIT license](https://img.shields.io/github/license/NadafMM/kubectl-shell)](LICENSE)
 [![CI](https://github.com/NadafMM/kubectl-shell/actions/workflows/test.yml/badge.svg)](https://github.com/NadafMM/kubectl-shell/actions/workflows/test.yml)
+[![Latest release](https://img.shields.io/github/v/release/NadafMM/kubectl-shell)](https://github.com/NadafMM/kubectl-shell/releases/latest)
 
 **`kube`** is a terminal companion for **`kubectl`**: live Tab completion, interactive **`view`**, **`plan`**, and **`ask`** helpers, all against your current kubeconfig.
 
@@ -9,7 +10,7 @@
 
 ## Requirements
 
-- **Node.js 22+**
+- **Node.js 22+** (Homebrew installs its own Node dependency)
 - **`kubectl`** on `PATH`
 - A **reachable cluster** in the current kubeconfig (no offline or practice mode)
 
@@ -20,6 +21,7 @@
 ```bash
 brew tap NadafMM/tap
 brew install kubectl-shell
+kube --version   # 0.5.0
 ```
 
 Upgrade: `brew update && brew upgrade kubectl-shell`
@@ -33,7 +35,7 @@ npm install -g .
 kube --version
 ```
 
-The bundle in `cli/kube.cjs` is committed; no build step is required to install.
+The bundle in `cli/kube.cjs` is committed; no build step is required to install. Release assets also include `kubectl-shell-*.tar.gz` and a standalone `kube.cjs`.
 
 `help`, `--version`, and `completion` work without a cluster; other commands need a live API.
 
@@ -85,7 +87,7 @@ kube completion fish | source
 
 Summary: projected completion snapshot (no Secret/ConfigMap bodies in cache), redacted history, sanitized Tab output, optional piped stdout redaction (`KUBE_SHELL_REDACT_STDOUT=1`).
 
-Details: [docs/security/threat-model.md](docs/security/threat-model.md).
+Details: [docs/security/threat-model.md](docs/security/threat-model.md). Report vulnerabilities via [private vulnerability reporting](https://github.com/NadafMM/kubectl-shell/security/advisories/new) — see [SECURITY.md](SECURITY.md).
 
 ## Develop
 
@@ -98,8 +100,8 @@ npm run lint
 npm run e2e:tty   # Linux/macOS; requires Python 3
 ```
 
-CI overview: [docs/ci.md](docs/ci.md).
+CI overview: [docs/ci.md](docs/ci.md). The demo GIF is produced from [`docs/demo.tape`](docs/demo.tape) (VHS) against a real cluster.
 
 ## Contributing and license
 
-Contributions welcome — read [CONTRIBUTING.md](CONTRIBUTING.md). Use [Conventional Commits](https://www.conventionalcommits.org/) in PR titles. This project is under the [MIT License](LICENSE).
+Contributions welcome — read [CONTRIBUTING.md](CONTRIBUTING.md). Use [Conventional Commits](https://www.conventionalcommits.org/) in PR titles. Questions: [Discussions](https://github.com/NadafMM/kubectl-shell/discussions). This project is under the [MIT License](LICENSE).
