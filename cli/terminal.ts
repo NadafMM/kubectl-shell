@@ -6,8 +6,7 @@ export function sleepMs(ms: number) {
 }
 
 export function refreshLine(rl: object) {
-  const refresh = (rl as { _refreshLine?: () => void })._refreshLine;
-  refresh?.();
+  (rl as { _refreshLine?: () => void })._refreshLine?.();
 }
 
 export function plainText(value: string): string {

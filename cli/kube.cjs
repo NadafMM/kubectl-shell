@@ -1690,8 +1690,7 @@ function sleepMs(ms) {
   Atomics.wait(SLEEP, 0, 0, ms);
 }
 function refreshLine(rl) {
-  const refresh = rl._refreshLine;
-  refresh?.();
+  rl._refreshLine?.();
 }
 function plainText(value) {
   let out = "";

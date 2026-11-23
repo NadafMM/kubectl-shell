@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { completionValue, plainText } from "./terminal.ts";
+import { completionValue, plainText, refreshLine } from "./terminal.ts";
+
+test("refreshLine calls _refreshLine on the readline object", () => {
+  const rl = {
+    refreshed: 0,
+    _refreshLine() {
+      this.refreshed += 1;
+    },
+  };
+  refreshLine(rl);
+  assert.equal(rl.refreshed, 1);
+});
 
 test("plainText removes an OSC sequence and keeps the text", () => {
   const cleaned = plainText("ok\u001b]0;pwn\u0007");

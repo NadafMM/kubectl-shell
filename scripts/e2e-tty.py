@@ -227,12 +227,22 @@ def repl_prompt_ctrlc():
     check("delete" not in result.verbs, "expected no kubectl delete", result)
 
 
+def repl_tab():
+    steps = [(1.5, b"get depl"), (0.5, b"\t"), (0.5, b"\r"), (1.5, b"exit\r")]
+    result = run([], steps, limit=10)
+    check("TypeError" not in result.output, "expected no crash on Tab", result)
+    check(result.exit_code() == 0, "expected exit 0 after exit", result)
+    check(["get", "deployments"] in result.calls,
+          "expected Tab to complete depl to deployments before kubectl ran", result)
+
+
 SCENARIOS = {
     "confirm-waits": confirm_waits,
     "confirm-yes": confirm_yes,
     "view-idle": view_idle,
     "repl-sigint": repl_sigint,
     "repl-prompt-ctrlc": repl_prompt_ctrlc,
+    "repl-tab": repl_tab,
 }
 
 
