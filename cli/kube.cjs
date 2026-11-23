@@ -1690,8 +1690,7 @@ function sleepMs(ms) {
   Atomics.wait(SLEEP, 0, 0, ms);
 }
 function refreshLine(rl) {
-  const refresh = rl._refreshLine;
-  refresh?.();
+  rl._refreshLine?.();
 }
 function plainText(value) {
   let out = "";
@@ -3274,7 +3273,7 @@ function redactLine(line) {
 }
 
 // cli/main.ts
-var VERSION = true ? "0.5.0" : "0.0.0-dev";
+var VERSION = true ? "0.5.1" : "0.0.0-dev";
 var HISTORY = import_node_path4.default.join(stateDir(), "history");
 var session = { yes: false };
 function loadHistory() {
