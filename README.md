@@ -45,7 +45,7 @@ The bundle in `cli/kube.cjs` is committed; no build step is required to install.
 kube                    # interactive shell
 kube get pods           # one-shot
 kube view               # full-screen list (plain table without a TTY)
-kube plan delete pod x  # preview risk before running
+kube plan delete pod x  # name matching pods and Services that would lose Ready pods
 kube ask "why is checkout crashing"
 ```
 
@@ -56,6 +56,8 @@ kube ask "why is checkout crashing"
 **`kube view` keys (TTY):** `1`–`5` resource kinds, `j`/`k`, Enter describe, `l` logs (pods), `d` delete (confirmed), `/` filter, `n` namespace, `a` all namespaces, `r` refresh, `q` quit.
 
 High-risk verbs (delete, writes, `port-forward`, `run`, `expose`, pod `exec`/`cp`/…) prompt **`y`** on a TTY; use **`kube --yes`** in scripts. **`kube --yes` alone does not open a pre-confirmed shell.**
+
+`plan delete` and the interactive `Run it? [y/N]` prompt for `delete` run up to four read-only `kubectl get -o json` calls and flag Services that would lose Ready pods. `kube --yes delete` skips that lookup.
 
 Agents: `kube plan --json …`, then `--yes` when the plan matches intent. `__complete --json` for completion without running the line.
 

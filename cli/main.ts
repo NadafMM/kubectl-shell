@@ -104,8 +104,9 @@ function suggest(line: string, cursor: number, mode: "repl" | "shell", fallback:
 }
 
 function confirm(prompt: string): boolean {
-  if (!process.stdin.isTTY || session.yes) return session.yes;
+  if (session.yes) return true;
   process.stderr.write(prompt);
+  if (!process.stdin.isTTY) return false;
   const input = openPromptInput();
   try {
     return readConfirm(input.fd, readSyncRetry, (text) => process.stderr.write(text));

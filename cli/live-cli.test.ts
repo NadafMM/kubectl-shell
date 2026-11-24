@@ -184,6 +184,55 @@ test("KUBE_SHELL_REDACT_STDOUT redacts piped get secret -o json", () => {
   assert.doesNotMatch(result.stdout ?? "", /cGFzcw==/);
 });
 
+function isBlastGet(line: string): boolean {
+  const argv = JSON.parse(line) as string[];
+  const output = argv.indexOf("-o");
+  return argv[0] === "get" && argv.includes("--request-timeout=4s") && argv[output + 1] === "json";
+}
+
+test("piped delete prints blast before the confirmation prompt", () => {
+  const refused = spawnKube(["delete", "pod", "worker-0"], { KUBE_FAKE_FIXTURE: "up" });
+  assert.equal(refused.status, 1);
+  assert.equal(refused.stdout, "");
+  const stderr = refused.stderr ?? "";
+  const blastAt = stderr.indexOf("blast:");
+  const promptAt = stderr.indexOf("Run it? [y/N]");
+  assert.ok(blastAt >= 0 && promptAt > blastAt);
+  assert.equal(logHasDelete(refused.lines), false);
+});
+
+test("plan --json delete includes blast", () => {
+  const result = spawnKube(["plan", "--json", "delete", "pod", "worker-0"], {
+    KUBE_FAKE_FIXTURE: "up",
+  });
+  assert.equal(result.status, 0);
+  const parsed = JSON.parse(result.stdout ?? "") as {
+    risk?: string;
+    summary?: string;
+    blast?: unknown;
+  };
+  assert.equal(parsed.risk, "high");
+  assert.match(parsed.summary ?? "", /Deletes pod\/worker-0/);
+  assert.ok(parsed.blast);
+});
+
+test("--yes delete does not run blast-radius gets", () => {
+  const allowed = spawnKube(["--yes", "delete", "pod", "worker-0"], { KUBE_FAKE_FIXTURE: "up" });
+  assert.equal(logHasDelete(allowed.lines), true);
+  assert.equal(allowed.lines.some(isBlastGet), false);
+});
+
+test("plan get and plan drain do not run blast-radius gets", () => {
+  const get = spawnKube(["plan", "get", "pods"], { KUBE_FAKE_FIXTURE: "up" });
+  assert.equal(get.status, 0);
+  assert.doesNotMatch(get.stdout ?? "", /blast/);
+  assert.equal(get.lines.some(isBlastGet), false);
+  const drain = spawnKube(["plan", "drain", "node-1"], { KUBE_FAKE_FIXTURE: "up" });
+  assert.equal(drain.status, 0);
+  assert.doesNotMatch(drain.stdout ?? "", /blast/);
+  assert.equal(drain.lines.some(isBlastGet), false);
+});
+
 test("--version prints the package.json version", () => {
   const { version } = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")) as {
     version: string;

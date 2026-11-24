@@ -2,16 +2,29 @@ import { metaOf } from "../src/lib/kube/shell-meta";
 import type { Cluster } from "../src/lib/kube/model";
 import { completionScript } from "./completion";
 import { toEngine } from "./engine";
-import { advise, formatAdvice, formatPlan, planCommand } from "./insight";
+import { BLAST_BUDGET_MS, blastRadius, formatBlast, type GetJson } from "./blast";
+import { advise, formatAdvice, formatPlan, planCommand, type Plan } from "./insight";
 import {
   applyLiveContext,
   invalidateLive,
   kubectlArgs,
   liveCluster,
   probeLive,
+  runJson,
   runLive,
 } from "./live";
 import { boardFrom, openView } from "./view";
+
+function liveBlast(plan: Plan, engineLine: string) {
+  const started = Date.now();
+  const now = () => Date.now();
+  const getJson: GetJson = (args) => {
+    const left = BLAST_BUDGET_MS - (now() - started);
+    if (left <= 0) return { ok: false, json: null, error: "timed out" };
+    return runJson(args, left);
+  };
+  return blastRadius(plan, kubectlArgs(engineLine), getJson, { now });
+}
 
 export type LineResult = { output: string; ok: boolean; cluster: Cluster; exit?: boolean };
 
@@ -88,7 +101,17 @@ export function runUserLine(
     if (!body) return { output: "usage: kube plan [--json] delete pod <name>", ok: false, cluster };
     const view = toEngine(body, body.length, "repl");
     const planned = planCommand(view.line, cluster);
-    return { output: asJson ? JSON.stringify(planned) : formatPlan(planned), ok: true, cluster };
+    const blast = planned.verb === "delete" ? liveBlast(planned, view.line) : undefined;
+    if (asJson) {
+      const payload = blast ? { ...planned, blast } : planned;
+      return { output: JSON.stringify(payload), ok: true, cluster };
+    }
+    const text = blast ? formatBlast(blast) : "";
+    return {
+      output: text ? `${formatPlan(planned)}\n${text}` : formatPlan(planned),
+      ok: true,
+      cluster,
+    };
   }
   if (meta === "ask") {
     const asJson = /(^|\s)--json(\s|$)/.test(trimmed);
@@ -110,7 +133,8 @@ export function runUserLine(
   const view = toEngine(trimmed, trimmed.length, "repl");
   const planned = planCommand(view.line, cluster);
   if (planned.risk === "high" && !host.yes) {
-    process.stderr.write(`${formatPlan(planned)}\n`);
+    const extra = planned.verb === "delete" ? formatBlast(liveBlast(planned, view.line)) : "";
+    process.stderr.write(`${formatPlan(planned)}${extra ? `\n${extra}` : ""}\n`);
     if (!host.confirm("Run it? [y/N] ")) return { output: "not run", ok: false, cluster };
   }
   const code = runLive(kubectlArgs(view.line), { inheritStdin: options.inheritStdin });

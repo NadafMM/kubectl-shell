@@ -502,6 +502,45 @@ export function kubectlArgs(engineLine: string): string[] {
     .map((token) => unquote(token.text));
 }
 
+export type KubectlJsonResult = { ok: boolean; json: unknown; error: string };
+
+function stderrLine(stderr: string): string {
+  const line = stderr
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .find(Boolean);
+  return (line ?? "").slice(0, 120);
+}
+
+/** Read one kubectl JSON document. Does not read or write the completion cache. */
+export function runJson(args: string[], timeoutMs = 3000): KubectlJsonResult {
+  const { cmd, prefix } = invocation();
+  const text = (value: string | Buffer | undefined) =>
+    typeof value === "string" ? value : value ? value.toString("utf8") : "";
+  try {
+    const stdout = execFileSync(cmd, [...prefix, ...args], {
+      encoding: "utf8",
+      timeout: timeoutMs,
+      maxBuffer: 16 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    try {
+      return { ok: true, json: JSON.parse(stdout), error: "" };
+    } catch {
+      return { ok: false, json: null, error: "invalid JSON" };
+    }
+  } catch (err) {
+    const failed = err as {
+      code?: string;
+      stdout?: string | Buffer;
+      stderr?: string | Buffer;
+    };
+    const line = stderrLine(text(failed.stderr));
+    const error = line || (failed.code === "ETIMEDOUT" ? "timed out" : "failed");
+    return { ok: false, json: null, error };
+  }
+}
+
 export function captureLive(args: string[]): { code: number; stdout: string; stderr: string } {
   const { cmd, prefix } = invocation();
   try {

@@ -18,6 +18,7 @@
 | **Private cache files**       | `0600` / `0700` on POSIX.                                                                                            |
 | **Completion sanitization**   | Terminal controls stripped; unsafe values dropped.                                                                   |
 | **`plan` warnings**           | Revealing `get secret` / `get configmap` output is called out before run.                                            |
+| **Delete blast radius**       | `plan delete` and interactive delete prompts perform up to four read-only `kubectl get -o json` calls under the caller's RBAC and never write or cache object payloads. |
 | **Optional stdout redaction** | `KUBE_SHELL_REDACT_STDOUT=1` redacts bodies on **non-TTY** stdout for those gets (pipes, not interactive terminals). |
 
 See README **Security and privacy** for user-facing detail.
