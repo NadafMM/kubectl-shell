@@ -69,6 +69,8 @@ A policy file at `~/.kube-shell/policy.json` can mark a context `guarded` or `co
 
 `kube sandbox up` starts a local kind cluster named `kube-shell-sandbox` and writes only `~/.kube-shell/sandbox/kubeconfig`. `kube --sandbox` and `kube sandbox shell` use that file. `kube sandbox down` deletes the cluster. `~/.kube/config` is not modified.
 
+`record on` inside the shell, or `kube --record session.md`, writes a redacted Markdown runbook of commands that actually ran. A refused confirmation is left out. The default file is `~/.kube-shell/sessions/`.
+
 Agents: `kube plan --json …`, then `--yes` when the plan matches intent. `__complete --json` for completion without running the line.
 
 ## Shell completion

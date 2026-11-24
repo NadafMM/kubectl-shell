@@ -24,8 +24,8 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 
 // cli/main.ts
-var import_node_fs12 = __toESM(require("node:fs"), 1);
-var import_node_path10 = __toESM(require("node:path"), 1);
+var import_node_fs13 = __toESM(require("node:fs"), 1);
+var import_node_path11 = __toESM(require("node:path"), 1);
 var import_node_readline = __toESM(require("node:readline"), 1);
 
 // src/lib/kube/shell-meta.ts
@@ -39,6 +39,7 @@ var SHELL_COMMANDS = [
   { value: "reset", detail: "Refresh names from the cluster", weight: 84 },
   { value: "audit", detail: "Show recent redacted command records", weight: 70 },
   { value: "undo", detail: "Restore the previous saved object", weight: 68 },
+  { value: "record", detail: "Record commands that actually ran", weight: 66 },
   { value: "help", detail: "List shell commands", weight: 50 },
   { value: "clear", detail: "Clear the screen", weight: 40 },
   { value: "exit", detail: "Leave the shell", weight: 30, aliases: ["quit"] }
@@ -1674,10 +1675,6 @@ function leadingFlags(argv) {
       else if (name === "--plan-id") parsed.planId = value;
       else if (name === "--confirm-context") parsed.confirmContext = value;
       else parsed.record = value;
-      if (name === "--record") {
-        parsed.error = "kube: --record is not available yet";
-        return parsed;
-      }
       continue;
     }
     if (arg.startsWith("-")) {
@@ -1911,6 +1908,9 @@ function completionValue(value) {
   if (/[`$;|\n]/.test(value)) return null;
   return value;
 }
+
+// cli/commands.ts
+var import_node_os2 = __toESM(require("node:os"), 1);
 
 // cli/completion.ts
 function completionScript(shell) {
@@ -3658,8 +3658,8 @@ function probeTarget(pod, kind) {
   if (!probe) return "probe";
   const http = obj(probe.httpGet);
   if (http) {
-    const path11 = str(http.path) || "/";
-    return `http://:${http.port ?? ""}${path11.startsWith("/") ? path11 : `/${path11}`}`;
+    const path12 = str(http.path) || "/";
+    return `http://:${http.port ?? ""}${path12.startsWith("/") ? path12 : `/${path12}`}`;
   }
   const tcp = obj(probe.tcpSocket);
   if (tcp) return `tcp:${tcp.port ?? ""}`;
@@ -3906,6 +3906,10 @@ function inspectPods(input) {
   return null;
 }
 
+// cli/record.ts
+var import_node_fs7 = __toESM(require("node:fs"), 1);
+var import_node_path7 = __toESM(require("node:path"), 1);
+
 // cli/audit.ts
 var import_node_crypto = __toESM(require("node:crypto"), 1);
 var import_node_fs6 = __toESM(require("node:fs"), 1);
@@ -4010,13 +4014,67 @@ function newAuditId() {
   return import_node_crypto.default.randomBytes(8).toString("hex");
 }
 
+// cli/record.ts
+var VERB_NAMES = new Set(VERBS.map((item) => item.name));
+var active = null;
+function sessionPath(home, context, now) {
+  const stamp = now.toISOString().replace(/[:.]/g, "-");
+  const safe = context.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-|-$/g, "") || "none";
+  return import_node_path7.default.join(home, ".kube-shell", "sessions", `${stamp}-${safe}.md`);
+}
+function redactCommand(argv) {
+  return `kubectl ${redactArgv(argv).join(" ")}`;
+}
+function shouldRecord(entry) {
+  if (entry.decision !== "executed" && entry.decision !== "dry-run") return false;
+  return VERB_NAMES.has(entry.verb);
+}
+function startRecord(file, header) {
+  if (active) return active;
+  active = file;
+  if (!import_node_fs7.default.existsSync(file)) {
+    writePrivate(
+      file,
+      `# kube session
+
+- context: ${header.context}
+- namespace: ${header.namespace}
+- started: ${header.started}
+`
+    );
+  }
+  return file;
+}
+function stopRecord() {
+  const file = active;
+  active = null;
+  return file;
+}
+function noteRan(entry) {
+  if (!active || !shouldRecord(entry)) return;
+  const lines = [
+    "",
+    `## ${entry.command}`,
+    "",
+    `- at: ${entry.timestamp}`,
+    `- context: ${entry.context}`,
+    `- namespace: ${entry.namespace}`,
+    `- exit: ${entry.exitCode}`,
+    ""
+  ];
+  if (entry.summary) lines.push(entry.summary, "");
+  if (entry.blast) lines.push(entry.blast, "");
+  const previous = import_node_fs7.default.readFileSync(active, "utf8");
+  writePrivate(active, `${previous}${lines.join("\n")}`);
+}
+
 // cli/plans.ts
 var import_node_crypto2 = __toESM(require("node:crypto"), 1);
-var import_node_fs7 = __toESM(require("node:fs"), 1);
-var import_node_path7 = __toESM(require("node:path"), 1);
+var import_node_fs8 = __toESM(require("node:fs"), 1);
+var import_node_path8 = __toESM(require("node:path"), 1);
 var TTL_MS2 = 5 * 60 * 1e3;
 function planPath(id) {
-  return import_node_path7.default.join(stateDir(), "plans", `${id}.json`);
+  return import_node_path8.default.join(stateDir(), "plans", `${id}.json`);
 }
 function mintPlan(record2, now = Date.now()) {
   const planId = import_node_crypto2.default.randomBytes(16).toString("hex");
@@ -4028,28 +4086,28 @@ function consumePlan(planId, expected, now = Date.now()) {
   const file = planPath(planId);
   let stored;
   try {
-    stored = JSON.parse(import_node_fs7.default.readFileSync(file, "utf8"));
+    stored = JSON.parse(import_node_fs8.default.readFileSync(file, "utf8"));
   } catch {
     return { ok: false, reason: "plan expired or unknown" };
   }
   if (!stored.expires || stored.expires <= now) {
-    import_node_fs7.default.rmSync(file, { force: true });
+    import_node_fs8.default.rmSync(file, { force: true });
     return { ok: false, reason: "plan expired or unknown" };
   }
   const same = stored.context === expected.context && stored.namespace === expected.namespace && JSON.stringify(stored.argv) === JSON.stringify(expected.argv);
   if (!same) return { ok: false, reason: "plan does not match this command" };
-  import_node_fs7.default.rmSync(file, { force: true });
+  import_node_fs8.default.rmSync(file, { force: true });
   return { ok: true };
 }
 
 // cli/undo.ts
-var import_node_fs8 = __toESM(require("node:fs"), 1);
-var import_node_path8 = __toESM(require("node:path"), 1);
+var import_node_fs9 = __toESM(require("node:fs"), 1);
+var import_node_path9 = __toESM(require("node:path"), 1);
 var SNAPSHOT_VERBS = /* @__PURE__ */ new Set(["apply", "replace", "patch", "scale", "label", "annotate", "set"]);
 var WORKLOADS = /* @__PURE__ */ new Set(["deployment", "statefulset", "daemonset"]);
 var DAY_MS = 24 * 60 * 60 * 1e3;
 function undoDir() {
-  return import_node_path8.default.join(stateDir(), "undo");
+  return import_node_path9.default.join(stateDir(), "undo");
 }
 function singular(token) {
   return resolveResource(token)?.singular ?? token.toLowerCase();
@@ -4104,7 +4162,7 @@ function rememberUndo(argv, cluster, id, now = Date.now()) {
   };
   if (target.kind === "secret" || target.kind === "configmap") {
     base.refused = `${target.kind} objects are not snapshotted`;
-    writePrivate(import_node_path8.default.join(undoDir(), `${id}.json`), JSON.stringify(base));
+    writePrivate(import_node_path9.default.join(undoDir(), `${id}.json`), JSON.stringify(base));
     return;
   }
   const got = captureLive(["get", target.kind, target.name, "-n", namespace, "-o", "json"]);
@@ -4119,17 +4177,17 @@ function rememberUndo(argv, cluster, id, now = Date.now()) {
   base.snapshot = cleanSnapshot(live);
   const revision = live.metadata.annotations?.["deployment.kubernetes.io/revision"];
   if (revision && WORKLOADS.has(target.kind)) base.revision = revision;
-  writePrivate(import_node_path8.default.join(undoDir(), `${id}.json`), JSON.stringify(base));
+  writePrivate(import_node_path9.default.join(undoDir(), `${id}.json`), JSON.stringify(base));
   pruneUndo(now);
 }
 function listUndo(now = Date.now()) {
   const dir = undoDir();
-  if (!import_node_fs8.default.existsSync(dir)) return [];
+  if (!import_node_fs9.default.existsSync(dir)) return [];
   const records = [];
-  for (const name of import_node_fs8.default.readdirSync(dir)) {
+  for (const name of import_node_fs9.default.readdirSync(dir)) {
     if (!name.endsWith(".json")) continue;
     try {
-      const record2 = JSON.parse(import_node_fs8.default.readFileSync(import_node_path8.default.join(dir, name), "utf8"));
+      const record2 = JSON.parse(import_node_fs9.default.readFileSync(import_node_path9.default.join(dir, name), "utf8"));
       if (now - record2.at <= DAY_MS) records.push(record2);
     } catch {
     }
@@ -4164,16 +4222,16 @@ function restoreArgs(record2) {
 function pruneUndo(now) {
   const records = listUndo(now);
   const keep = new Set(records.map((record2) => record2.id));
-  for (const name of import_node_fs8.default.readdirSync(undoDir())) {
+  for (const name of import_node_fs9.default.readdirSync(undoDir())) {
     const id = name.replace(/\.json$/, "");
-    if (!keep.has(id)) import_node_fs8.default.rmSync(import_node_path8.default.join(undoDir(), name), { force: true });
+    if (!keep.has(id)) import_node_fs9.default.rmSync(import_node_path9.default.join(undoDir(), name), { force: true });
   }
 }
 
 // cli/tty.ts
-var import_node_fs9 = __toESM(require("node:fs"), 1);
+var import_node_fs10 = __toESM(require("node:fs"), 1);
 var RETRY = /* @__PURE__ */ new Set(["EAGAIN", "EWOULDBLOCK", "EINTR"]);
-function openPromptInput(platform = process.platform, open = (file) => import_node_fs9.default.openSync(file, "r")) {
+function openPromptInput(platform = process.platform, open = (file) => import_node_fs10.default.openSync(file, "r")) {
   const stdin = { fd: 0, close: () => {
   } };
   if (platform === "win32") return stdin;
@@ -4183,9 +4241,9 @@ function openPromptInput(platform = process.platform, open = (file) => import_no
   } catch {
     return stdin;
   }
-  return { fd, close: () => import_node_fs9.default.closeSync(fd) };
+  return { fd, close: () => import_node_fs10.default.closeSync(fd) };
 }
-function readSyncRetry(fd, buf, read = (f, b) => import_node_fs9.default.readSync(f, b, 0, b.length, null), sleep = sleepMs) {
+function readSyncRetry(fd, buf, read = (f, b) => import_node_fs10.default.readSync(f, b, 0, b.length, null), sleep = sleepMs) {
   for (; ; ) {
     try {
       return read(fd, buf);
@@ -4835,6 +4893,22 @@ function runUserLine(line, cluster, host2, options = {}) {
     const lines = tailAudit(count);
     return { output: lines.join("\n"), ok: true, cluster };
   }
+  if (meta === "record") {
+    const parts = trimmed.split(/\s+/);
+    const action = parts[1] ?? "on";
+    if (action === "off") {
+      const file2 = stopRecord();
+      return { output: file2 ? `recording stopped ${file2}` : "not recording", ok: true, cluster };
+    }
+    if (action !== "on") return { output: "usage: record on|off", ok: false, cluster };
+    const file = parts[2] || sessionPath(import_node_os2.default.homedir(), cluster.current || "none", /* @__PURE__ */ new Date());
+    startRecord(file, {
+      context: cluster.current || "none",
+      namespace: namespaceOf(cluster) || "default",
+      started: (/* @__PURE__ */ new Date()).toISOString()
+    });
+    return { output: `recording ${file}`, ok: true, cluster };
+  }
   if (meta === "ns" || meta === "ctx") {
     const name = trimmed.split(/\s+/).slice(1).join(" ").trim();
     if (!name) return { output: `usage: ${meta} <name>`, ok: false, cluster };
@@ -4944,6 +5018,7 @@ ${text}` : formatPlan(planned2),
     return { output: `refused: ${planned.verb} is not allowed for agents`, ok: false, cluster };
   }
   const needsPlan = host2.agent === true && host2.policy?.agents?.writeRequires === "approved-plan" && planned.mutating;
+  let blastText = "";
   if (needsPlan) {
     if (!host2.planId) {
       writeAudit("denied-policy", "none", null);
@@ -4970,9 +5045,9 @@ ${text}` : formatPlan(planned2),
       cluster
     };
   } else if ((planned.risk === "high" || rule.mode === "guarded" && planned.risk === "low") && !host2.yes) {
-    const extra = wantsBlast(planned) ? formatBlast(liveBlast(planned, view.line, cluster)) : "";
-    process.stderr.write(`${formatPlan(planned)}${extra ? `
-${extra}` : ""}
+    blastText = wantsBlast(planned) ? formatBlast(liveBlast(planned, view.line, cluster)) : "";
+    process.stderr.write(`${formatPlan(planned)}${blastText ? `
+${blastText}` : ""}
 `);
     if (!host2.confirm("Run it? [y/N] ")) {
       writeAudit("refused-confirm", "none", null);
@@ -4984,11 +5059,23 @@ ${extra}` : ""}
   if (!dryRun2) rememberUndo(argv, cluster, auditId);
   const code = runLive(argv, { inheritStdin: options.inheritStdin });
   writeAudit(dryRun2 ? "dry-run" : "executed", approver, code);
+  noteRan({
+    decision: dryRun2 ? "dry-run" : "executed",
+    verb: planned.verb,
+    timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+    context: planned.context,
+    namespace: planned.namespace,
+    command: redactCommand(argv),
+    risk: planned.risk,
+    exitCode: code,
+    summary: planned.mutating ? planned.summary : void 0,
+    blast: blastText || void 0
+  });
   return { output: "", ok: code === 0, cluster: applyLiveContext(cluster) };
 }
 
 // cli/mcp.ts
-var import_node_fs10 = __toESM(require("node:fs"), 1);
+var import_node_fs11 = __toESM(require("node:fs"), 1);
 var DEFAULT_ALLOW = ["get", "describe", "logs", "plan"];
 function policy() {
   const loaded = readPolicy(policyFile({ agent: true }));
@@ -5056,9 +5143,9 @@ function handleRpc(message, cluster) {
   }
   const name = message.params?.name ?? "";
   const args = message.params?.arguments ?? {};
-  const active = policy();
-  const rule = ruleFor(active, cluster.current);
-  const allow = active?.agents?.allow ?? DEFAULT_ALLOW;
+  const active2 = policy();
+  const rule = ruleFor(active2, cluster.current);
+  const allow = active2?.agents?.allow ?? DEFAULT_ALLOW;
   if (name === "kube_context") {
     return toolResult(
       id,
@@ -5078,19 +5165,19 @@ function handleRpc(message, cluster) {
   if (name === "kube_plan") {
     const blast = blastRadius(planned, argv, (kubectl) => runJson(kubectl, 3e3));
     const planId = mintPlan({ context: planned.context, namespace: planned.namespace, argv });
-    record(active, cluster, argv, planned.risk, "executed", 0, started, "none");
+    record(active2, cluster, argv, planned.risk, "executed", 0, started, "none");
     return toolResult(id, JSON.stringify({ ...planned, blast, planId, text: formatBlast(blast) }));
   }
   if (name !== "kube_execute") return toolResult(id, "unknown tool", true);
   if (rule.deny.includes(planned.verb)) {
-    record(active, cluster, argv, planned.risk, "denied-policy", null, started, "none");
+    record(active2, cluster, argv, planned.risk, "denied-policy", null, started, "none");
     return toolResult(id, `refused: ${planned.verb} is denied by policy`, true);
   }
   if (planned.mutating) {
     const typedBlocked = rule.confirm === "typed" && !allow.includes(planned.verb);
     const planId = typeof args.planId === "string" ? args.planId : "";
     if (typedBlocked || !planId) {
-      record(active, cluster, argv, planned.risk, "denied-policy", null, started, "none");
+      record(active2, cluster, argv, planned.risk, "denied-policy", null, started, "none");
       return toolResult(id, "refused: mutating commands need a plan id", true);
     }
     const consumed = consumePlan(planId, {
@@ -5099,12 +5186,12 @@ function handleRpc(message, cluster) {
       argv
     });
     if (!consumed.ok) {
-      record(active, cluster, argv, planned.risk, "denied-policy", null, started, "none");
+      record(active2, cluster, argv, planned.risk, "denied-policy", null, started, "none");
       return toolResult(id, `refused: ${consumed.reason}`, true);
     }
     const result2 = captureLive(argv);
     record(
-      active,
+      active2,
       cluster,
       argv,
       planned.risk,
@@ -5116,16 +5203,16 @@ function handleRpc(message, cluster) {
     return toolResult(id, result2.stdout || result2.stderr, result2.code !== 0);
   }
   if (!allow.includes(planned.verb)) {
-    record(active, cluster, argv, planned.risk, "denied-policy", null, started, "none");
+    record(active2, cluster, argv, planned.risk, "denied-policy", null, started, "none");
     return toolResult(id, `refused: ${planned.verb} is not allowed`, true);
   }
   const result = captureLive(argv);
   const stdout = sensitiveStdoutKind(argv) !== null ? redactKubectlStdout(argv, result.stdout) : result.stdout;
-  record(active, cluster, argv, planned.risk, "executed", result.code, started, "none");
+  record(active2, cluster, argv, planned.risk, "executed", result.code, started, "none");
   return toolResult(id, stdout, result.code !== 0);
 }
 function serveMcp(cluster) {
-  const buf = import_node_fs10.default.readFileSync(0);
+  const buf = import_node_fs11.default.readFileSync(0);
   let offset = 0;
   while (offset + 4 < buf.length) {
     const headerEnd = buf.indexOf("\r\n\r\n", offset);
@@ -5149,9 +5236,9 @@ function serveMcp(cluster) {
 
 // cli/sandbox.ts
 var import_node_child_process2 = require("node:child_process");
-var import_node_fs11 = __toESM(require("node:fs"), 1);
-var import_node_os2 = __toESM(require("node:os"), 1);
-var import_node_path9 = __toESM(require("node:path"), 1);
+var import_node_fs12 = __toESM(require("node:fs"), 1);
+var import_node_os3 = __toESM(require("node:os"), 1);
+var import_node_path10 = __toESM(require("node:path"), 1);
 var SANDBOX_CLUSTER = "kube-shell-sandbox";
 var SANDBOX_SEED = `apiVersion: apps/v1
 kind: Deployment
@@ -5196,8 +5283,8 @@ spec:
     - name: app
       image: kube-shell/missing:none
 `;
-function sandboxKubeconfig(home = import_node_os2.default.homedir()) {
-  return import_node_path9.default.join(home, ".kube-shell", "sandbox", "kubeconfig");
+function sandboxKubeconfig(home = import_node_os3.default.homedir()) {
+  return import_node_path10.default.join(home, ".kube-shell", "sandbox", "kubeconfig");
 }
 function childEnv(kubeconfig) {
   return { ...process.env, KUBECONFIG: kubeconfig };
@@ -5210,7 +5297,7 @@ function kubectlCmd() {
 }
 function tighten(file, mode) {
   try {
-    import_node_fs11.default.chmodSync(file, mode);
+    import_node_fs12.default.chmodSync(file, mode);
   } catch {
   }
 }
@@ -5219,9 +5306,9 @@ function sandboxUp(host2) {
     return { ok: false, message: "kube sandbox needs kind and Docker on PATH" };
   }
   const kubeconfig = sandboxKubeconfig(host2.home);
-  import_node_fs11.default.mkdirSync(import_node_path9.default.dirname(kubeconfig), { recursive: true, mode: 448 });
-  tighten(import_node_path9.default.dirname(kubeconfig), 448);
-  tighten(import_node_path9.default.dirname(import_node_path9.default.dirname(kubeconfig)), 448);
+  import_node_fs12.default.mkdirSync(import_node_path10.default.dirname(kubeconfig), { recursive: true, mode: 448 });
+  tighten(import_node_path10.default.dirname(kubeconfig), 448);
+  tighten(import_node_path10.default.dirname(import_node_path10.default.dirname(kubeconfig)), 448);
   const created = host2.run({
     cmd: kindCmd(),
     args: ["create", "cluster", "--name", SANDBOX_CLUSTER, "--kubeconfig", kubeconfig],
@@ -5270,7 +5357,7 @@ function sandboxDown(host2) {
       message: (deleted.stderr || deleted.stdout || "kind delete failed").trim()
     };
   }
-  import_node_fs11.default.rmSync(kubeconfig, { force: true });
+  import_node_fs12.default.rmSync(kubeconfig, { force: true });
   return { ok: true, message: `sandbox ${SANDBOX_CLUSTER} is down` };
 }
 function commandOnPath(name) {
@@ -5305,13 +5392,13 @@ function launch(command) {
     };
   }
 }
-function realSandbox(home = import_node_os2.default.homedir()) {
+function realSandbox(home = import_node_os3.default.homedir()) {
   return { home, run: launch, has: commandOnPath };
 }
 
 // cli/main.ts
 var VERSION = true ? "0.5.1" : "0.0.0-dev";
-var HISTORY = import_node_path10.default.join(stateDir(), "history");
+var HISTORY = import_node_path11.default.join(stateDir(), "history");
 var session = {
   yes: false,
   agent: false,
@@ -5321,7 +5408,7 @@ var session = {
 };
 function loadHistory() {
   try {
-    return import_node_fs12.default.readFileSync(HISTORY, "utf8").split("\n").map((line) => line.trimEnd()).filter(Boolean).slice(-200).reverse();
+    return import_node_fs13.default.readFileSync(HISTORY, "utf8").split("\n").map((line) => line.trimEnd()).filter(Boolean).slice(-200).reverse();
   } catch {
     return [];
   }
@@ -5329,7 +5416,7 @@ function loadHistory() {
 var HISTORY_LIMIT = 200;
 function trimHistoryFile() {
   try {
-    const lines = import_node_fs12.default.readFileSync(HISTORY, "utf8").split("\n").filter(Boolean);
+    const lines = import_node_fs13.default.readFileSync(HISTORY, "utf8").split("\n").filter(Boolean);
     if (lines.length <= HISTORY_LIMIT) return;
     writePrivate(HISTORY, `${lines.slice(-HISTORY_LIMIT).join("\n")}
 `);
@@ -5340,9 +5427,9 @@ function remember2(line) {
   try {
     const trimmed = redactLine(line.trim());
     if (!trimmed) return;
-    if (!import_node_fs12.default.existsSync(HISTORY)) writePrivate(HISTORY, "");
-    else import_node_fs12.default.chmodSync(HISTORY, 384);
-    import_node_fs12.default.appendFileSync(HISTORY, `${trimmed}
+    if (!import_node_fs13.default.existsSync(HISTORY)) writePrivate(HISTORY, "");
+    else import_node_fs13.default.chmodSync(HISTORY, 384);
+    import_node_fs13.default.appendFileSync(HISTORY, `${trimmed}
 `);
     trimHistoryFile();
   } catch {
@@ -5359,6 +5446,7 @@ Tab completes against the current cluster. kube exits if kubectl cannot reach it
   kube plan delete pod <name>  what it will change, before it runs
   kube ask "why is it crashing"
   kube sandbox up|down|shell  local kind cluster, separate kubeconfig
+  kube --record session.md     keep commands that actually ran
   kube --sandbox get pods      use that cluster
   kube plan --json get pods    same plan, for an agent
   kube --yes delete pod <name> skip the confirmation
@@ -5389,7 +5477,7 @@ function readOneLine(fd) {
   const buf = Buffer.alloc(1);
   try {
     for (; ; ) {
-      const n = import_node_fs12.default.readSync(fd, buf);
+      const n = import_node_fs13.default.readSync(fd, buf);
       if (n <= 0) break;
       const char = buf.toString("utf8", 0, n);
       text += char;
@@ -5624,7 +5712,7 @@ function prepareCommand(flags) {
   }
   if (flags.sandbox) {
     const config = sandboxKubeconfig();
-    if (!import_node_fs12.default.existsSync(config)) {
+    if (!import_node_fs13.default.existsSync(config)) {
       process.stderr.write("kube sandbox is not up. Run kube sandbox up.\n");
       process.exit(1);
     }
@@ -5710,6 +5798,13 @@ function main() {
     process.exit(result2.ok ? 0 : 1);
   }
   const cluster = boot();
+  if (flags.record) {
+    startRecord(import_node_path11.default.resolve(flags.record), {
+      context: cluster.current || "none",
+      namespace: namespaceOf(cluster) || "default",
+      started: (/* @__PURE__ */ new Date()).toISOString()
+    });
+  }
   if (rest[0] === "mcp") {
     serveMcp(cluster);
     return;
@@ -5717,7 +5812,7 @@ function main() {
   if (rest.length === 0) {
     if (!process.stdin.isTTY) {
       let current = cluster;
-      const text = import_node_fs12.default.readFileSync(0, "utf8");
+      const text = import_node_fs13.default.readFileSync(0, "utf8");
       let code = 0;
       for (const line2 of text.split("\n")) {
         if (!line2.trim()) continue;

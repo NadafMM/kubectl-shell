@@ -13,9 +13,10 @@ import { stateDir, writePrivate } from "./private";
 import { redactLine } from "./redact";
 import { liveCluster, probeLive } from "./live";
 import { serveMcp } from "./mcp";
+import { startRecord } from "./record";
 import { realSandbox, sandboxDown, sandboxKubeconfig, sandboxUp } from "./sandbox";
 import { openPromptInput, readSyncRetry } from "./tty";
-import { promptOf, type Cluster } from "../src/lib/kube/model";
+import { promptOf, namespaceOf, type Cluster } from "../src/lib/kube/model";
 import { quoteArg } from "../src/lib/kube/parse";
 
 declare const __KUBE_VERSION__: string | undefined;
@@ -96,6 +97,7 @@ Tab completes against the current cluster. kube exits if kubectl cannot reach it
   kube plan delete pod <name>  what it will change, before it runs
   kube ask "why is it crashing"
   kube sandbox up|down|shell  local kind cluster, separate kubeconfig
+  kube --record session.md     keep commands that actually ran
   kube --sandbox get pods      use that cluster
   kube plan --json get pods    same plan, for an agent
   kube --yes delete pod <name> skip the confirmation
@@ -475,6 +477,13 @@ export function main() {
     process.exit(result.ok ? 0 : 1);
   }
   const cluster = boot();
+  if (flags.record) {
+    startRecord(path.resolve(flags.record), {
+      context: cluster.current || "none",
+      namespace: namespaceOf(cluster) || "default",
+      started: new Date().toISOString(),
+    });
+  }
 
   if (rest[0] === "mcp") {
     serveMcp(cluster);

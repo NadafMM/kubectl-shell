@@ -512,3 +512,34 @@ test("--version prints the package.json version", () => {
   assert.equal(result.status, 0);
   assert.equal((result.stdout ?? "").trim(), version);
 });
+
+test("record keeps an executed get and drops a refused delete", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "kube-record-live-"));
+  const result = spawnKube(
+    [],
+    { KUBE_FAKE_FIXTURE: "up", KUBE_TEST_HOME: home },
+    "record on\ndelete pod worker-0\nget pods --from-literal password=secret\nrecord off\nget ns\n",
+  );
+  assert.equal(result.status, 1);
+  const recorded = (result.stdout ?? "").match(/recording (.+)/);
+  assert.ok(recorded?.[1]);
+  const file = recorded[1].trim();
+  const text = fs.readFileSync(file, "utf8");
+  assert.match(text, /kubectl get pods --from-literal password=\*\*\*/);
+  assert.equal(text.includes("delete"), false);
+  assert.equal(text.includes("password=secret"), false);
+  assert.equal(text.includes("kubectl get ns"), false);
+  if (process.platform !== "win32") assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+});
+
+test("--record writes the named session file", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "kube-record-flag-"));
+  const file = path.join(home, "out.md");
+  const result = spawnKube(["--record", file, "get", "pods"], {
+    KUBE_FAKE_FIXTURE: "up",
+    KUBE_TEST_HOME: home,
+  });
+  assert.equal(result.status, 0, result.stderr ?? "");
+  assert.match(fs.readFileSync(file, "utf8"), /kubectl get pods/);
+  if (process.platform !== "win32") assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+});

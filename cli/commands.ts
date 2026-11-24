@@ -1,5 +1,6 @@
 import { metaOf } from "../src/lib/kube/shell-meta";
 import { namespaceOf, type Cluster } from "../src/lib/kube/model";
+import os from "node:os";
 import { completionScript } from "./completion";
 import { toEngine } from "./engine";
 import { BLAST_BUDGET_MS, blastRadius, formatBlast, type GetJson } from "./blast";
@@ -15,6 +16,7 @@ import {
   runLive,
 } from "./live";
 import { adviceFrom, inspectPods, podNameFrom } from "./diagnose";
+import { noteRan, redactCommand, sessionPath, startRecord, stopRecord } from "./record";
 import {
   appendAudit,
   auditEnabled,
@@ -183,6 +185,22 @@ export function runUserLine(
     const lines = tailAudit(count);
     return { output: lines.join("\n"), ok: true, cluster };
   }
+  if (meta === "record") {
+    const parts = trimmed.split(/\s+/);
+    const action = parts[1] ?? "on";
+    if (action === "off") {
+      const file = stopRecord();
+      return { output: file ? `recording stopped ${file}` : "not recording", ok: true, cluster };
+    }
+    if (action !== "on") return { output: "usage: record on|off", ok: false, cluster };
+    const file = parts[2] || sessionPath(os.homedir(), cluster.current || "none", new Date());
+    startRecord(file, {
+      context: cluster.current || "none",
+      namespace: namespaceOf(cluster) || "default",
+      started: new Date().toISOString(),
+    });
+    return { output: `recording ${file}`, ok: true, cluster };
+  }
   if (meta === "ns" || meta === "ctx") {
     const name = trimmed.split(/\s+/).slice(1).join(" ").trim();
     if (!name) return { output: `usage: ${meta} <name>`, ok: false, cluster };
@@ -310,6 +328,7 @@ export function runUserLine(
     host.agent === true &&
     host.policy?.agents?.writeRequires === "approved-plan" &&
     planned.mutating;
+  let blastText = "";
   if (needsPlan) {
     if (!host.planId) {
       writeAudit("denied-policy", "none", null);
@@ -339,8 +358,8 @@ export function runUserLine(
     (planned.risk === "high" || (rule.mode === "guarded" && planned.risk === "low")) &&
     !host.yes
   ) {
-    const extra = wantsBlast(planned) ? formatBlast(liveBlast(planned, view.line, cluster)) : "";
-    process.stderr.write(`${formatPlan(planned)}${extra ? `\n${extra}` : ""}\n`);
+    blastText = wantsBlast(planned) ? formatBlast(liveBlast(planned, view.line, cluster)) : "";
+    process.stderr.write(`${formatPlan(planned)}${blastText ? `\n${blastText}` : ""}\n`);
     if (!host.confirm("Run it? [y/N] ")) {
       writeAudit("refused-confirm", "none", null);
       return { output: "not run", ok: false, cluster };
@@ -357,5 +376,17 @@ export function runUserLine(
   if (!dryRun) rememberUndo(argv, cluster, auditId);
   const code = runLive(argv, { inheritStdin: options.inheritStdin });
   writeAudit(dryRun ? "dry-run" : "executed", approver, code);
+  noteRan({
+    decision: dryRun ? "dry-run" : "executed",
+    verb: planned.verb,
+    timestamp: new Date().toISOString(),
+    context: planned.context,
+    namespace: planned.namespace,
+    command: redactCommand(argv),
+    risk: planned.risk,
+    exitCode: code,
+    summary: planned.mutating ? planned.summary : undefined,
+    blast: blastText || undefined,
+  });
   return { output: "", ok: code === 0, cluster: applyLiveContext(cluster) };
 }

@@ -50,10 +50,6 @@ export function leadingFlags(argv: string[]): LeadingFlags {
       else if (name === "--plan-id") parsed.planId = value;
       else if (name === "--confirm-context") parsed.confirmContext = value;
       else parsed.record = value;
-      if (name === "--record") {
-        parsed.error = "kube: --record is not available yet";
-        return parsed;
-      }
       continue;
     }
     if (arg.startsWith("-")) {

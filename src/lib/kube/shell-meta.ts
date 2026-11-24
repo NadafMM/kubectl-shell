@@ -10,6 +10,7 @@ export const SHELL_COMMANDS: ShellCommand[] = [
   { value: "reset", detail: "Refresh names from the cluster", weight: 84 },
   { value: "audit", detail: "Show recent redacted command records", weight: 70 },
   { value: "undo", detail: "Restore the previous saved object", weight: 68 },
+  { value: "record", detail: "Record commands that actually ran", weight: 66 },
   { value: "help", detail: "List shell commands", weight: 50 },
   { value: "clear", detail: "Clear the screen", weight: 40 },
   { value: "exit", detail: "Leave the shell", weight: 30, aliases: ["quit"] },
