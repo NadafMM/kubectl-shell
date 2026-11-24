@@ -357,10 +357,151 @@ test("an approved plan records its plan id and redacts literals", () => {
   assert.match(audit, new RegExp(`"approver":"plan-id:${planId}"`));
 });
 
+test("undo rolls a deployment back and refuses a Secret", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "kube-undo-"));
+  const env = { KUBE_FAKE_FIXTURE: "up", KUBE_FAKE_UNDO: "1", KUBE_TEST_HOME: home };
+  const changed = spawnKube(["set", "image", "deployment/checkout", "nginx=nginx:1.2"], env);
+  assert.equal(changed.status, 0);
+  const saved = fs
+    .readdirSync(path.join(home, ".kube-shell", "undo"))
+    .find((name) => name.endsWith(".json"));
+  assert.ok(saved);
+  const snapshot = fs.readFileSync(path.join(home, ".kube-shell", "undo", saved ?? ""), "utf8");
+  assert.doesNotMatch(snapshot, /resourceVersion/);
+  assert.doesNotMatch(snapshot, /"status"/);
+  const restored = spawnKube(["--yes", "undo"], env);
+  assert.equal(restored.status, 0);
+  const rolled = restored.lines.some((line) => {
+    const argv = JSON.parse(line) as string[];
+    return argv[0] === "rollout" && argv.includes("--to-revision=3");
+  });
+  assert.equal(rolled, true);
+  const secret = spawnKube(["label", "secret", "token", "env=prod"], env);
+  assert.equal(secret.status, 0);
+  const refused = spawnKube(["--yes", "undo"], env);
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr ?? "", /Secrets or ConfigMaps/);
+  assert.equal(
+    refused.lines.some((line) => (JSON.parse(line) as string[])[0] === "apply"),
+    false,
+  );
+});
+
 test("an unknown leading flag is an error", () => {
   const result = spawnKube(["--nope", "get", "pods"], { KUBE_FAKE_FIXTURE: "down" });
   assert.equal(result.status, 1);
   assert.match(result.stderr ?? "", /unknown flag/);
+});
+
+test("ask --json reports an OOMKilled pod from kubectl", () => {
+  const result = spawnKube(["ask", "--json", "why is checkout crashing"], {
+    KUBE_FAKE_FIXTURE: "up",
+    KUBE_FAKE_DIAG: "oom",
+  });
+  assert.equal(result.status, 0);
+  const body = JSON.parse(result.stdout ?? "") as {
+    findings: { cause: string; commands: string[] }[];
+  };
+  assert.match(body.findings[0]?.cause ?? "", /OOMKilled/);
+  assert.match(body.findings[0]?.cause ?? "", /memory limit 64Mi/);
+  assert.equal(JSON.stringify(body).includes("password=secret"), false);
+  const logged = result.lines.map((line) => JSON.parse(line) as string[]);
+  assert.equal(
+    logged.some((argv) => argv[0] === "get" && (argv[1] === "pod" || argv[1] === "pods")),
+    true,
+  );
+});
+
+test("ask about port-forward does not read pod logs", () => {
+  const result = spawnKube(["ask", "how do I port-forward"], {
+    KUBE_FAKE_FIXTURE: "up",
+    KUBE_FAKE_DIAG: "oom",
+  });
+  assert.equal(result.status, 0);
+  assert.match(result.stdout ?? "", /port-forward/);
+  const logged = result.lines.map((line) => JSON.parse(line) as string[]);
+  assert.equal(
+    logged.some((argv) => argv[0] === "logs"),
+    false,
+  );
+});
+
+test("--sandbox refuses to run before the practice cluster exists", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "kube-sandbox-missing-"));
+  const userConfig = path.join(home, ".kube", "config");
+  fs.mkdirSync(path.dirname(userConfig), { recursive: true });
+  fs.writeFileSync(userConfig, "original-kubeconfig");
+  const result = spawnKube(["--sandbox", "get", "pods"], {
+    KUBE_FAKE_FIXTURE: "up",
+    KUBE_TEST_HOME: home,
+    KUBECONFIG: userConfig,
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr ?? "", /kube sandbox is not up/);
+  assert.equal(result.lines.length, 0);
+  assert.equal(fs.readFileSync(userConfig, "utf8"), "original-kubeconfig");
+});
+
+test("sandbox up does not modify the user kubeconfig", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "kube-sandbox-up-"));
+  const userConfig = path.join(home, ".kube", "config");
+  fs.mkdirSync(path.dirname(userConfig), { recursive: true });
+  fs.writeFileSync(userConfig, "original-kubeconfig");
+  const kindLog = path.join(home, "kind.log");
+  const kind = path.join(root, "scripts", "fake-kind.mjs");
+  const result = spawnKube(["sandbox", "up"], {
+    KUBE_FAKE_FIXTURE: "up",
+    KUBE_TEST_HOME: home,
+    KUBECONFIG: userConfig,
+    KUBE_SHELL_KIND: kind,
+    KUBE_SHELL_DOCKER: "docker",
+    KUBE_FAKE_KIND_LOG: kindLog,
+  });
+  assert.equal(result.status, 0, result.stderr ?? "");
+  assert.equal(fs.readFileSync(userConfig, "utf8"), "original-kubeconfig");
+  const created = JSON.parse(fs.readFileSync(kindLog, "utf8").split("\n")[0] ?? "[]") as string[];
+  assert.deepEqual(created.slice(0, 4), ["create", "cluster", "--name", "kube-shell-sandbox"]);
+  const config = created[created.indexOf("--kubeconfig") + 1];
+  assert.equal(config, path.join(home, ".kube-shell", "sandbox", "kubeconfig"));
+  assert.equal(
+    result.lines.some((line) => {
+      const argv = JSON.parse(line) as string[];
+      return argv[0] === "apply" && argv.includes("-f");
+    }),
+    true,
+  );
+  const down = spawnKube(["sandbox", "down"], {
+    KUBE_FAKE_FIXTURE: "up",
+    KUBE_TEST_HOME: home,
+    KUBECONFIG: userConfig,
+    KUBE_SHELL_KIND: kind,
+    KUBE_SHELL_DOCKER: "docker",
+    KUBE_FAKE_KIND_LOG: kindLog,
+  });
+  assert.equal(down.status, 0, down.stderr ?? "");
+  assert.equal(fs.existsSync(config ?? ""), false);
+  assert.equal(fs.readFileSync(userConfig, "utf8"), "original-kubeconfig");
+});
+
+test("--sandbox plan delete uses the sandbox kubeconfig", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "kube-sandbox-use-"));
+  const userConfig = path.join(home, ".kube", "config");
+  fs.mkdirSync(path.dirname(userConfig), { recursive: true });
+  fs.writeFileSync(userConfig, "original-kubeconfig");
+  const sandboxConfig = path.join(home, ".kube-shell", "sandbox", "kubeconfig");
+  fs.mkdirSync(path.dirname(sandboxConfig), { recursive: true });
+  fs.writeFileSync(sandboxConfig, "apiVersion: v1\n");
+  const seen = path.join(home, "seen-kubeconfig");
+  const result = spawnKube(["--sandbox", "plan", "delete", "deploy/demo"], {
+    KUBE_FAKE_FIXTURE: "up",
+    KUBE_TEST_HOME: home,
+    KUBECONFIG: userConfig,
+    KUBE_FAKE_KUBECONFIG_OUT: seen,
+  });
+  assert.equal(result.status, 0, result.stderr ?? "");
+  assert.match(result.stdout ?? "", /demo/);
+  assert.equal(fs.readFileSync(seen, "utf8"), sandboxConfig);
+  assert.equal(fs.readFileSync(userConfig, "utf8"), "original-kubeconfig");
 });
 
 test("--version prints the package.json version", () => {

@@ -1,5 +1,5 @@
 import { metaOf } from "../src/lib/kube/shell-meta";
-import type { Cluster } from "../src/lib/kube/model";
+import { namespaceOf, type Cluster } from "../src/lib/kube/model";
 import { completionScript } from "./completion";
 import { toEngine } from "./engine";
 import { BLAST_BUDGET_MS, blastRadius, formatBlast, type GetJson } from "./blast";
@@ -10,9 +10,11 @@ import {
   kubectlArgs,
   liveCluster,
   probeLive,
+  captureLive,
   runJson,
   runLive,
 } from "./live";
+import { adviceFrom, inspectPods, podNameFrom } from "./diagnose";
 import {
   appendAudit,
   auditEnabled,
@@ -23,6 +25,7 @@ import {
   type AuditDecision,
 } from "./audit";
 import { consumePlan, mintPlan } from "./plans";
+import { latestUndo, listUndo, rememberUndo, restoreArgs, undoRefusal } from "./undo";
 import { ruleFor, type Policy } from "./policy";
 import { boardFrom, openView } from "./view";
 
@@ -36,7 +39,7 @@ function wantsBlast(plan: Plan): boolean {
 
 const sessionScope = new WeakMap<Cluster, { namespace?: string; context?: string }>();
 
-function commandArgs(engineLine: string, cluster: Cluster): string[] {
+export function commandArgs(engineLine: string, cluster: Cluster): string[] {
   const args = [...kubectlArgs(engineLine)];
   const scope = sessionScope.get(cluster);
   const hasNs = args.some(
@@ -50,6 +53,13 @@ function commandArgs(engineLine: string, cluster: Cluster): string[] {
   if (scope?.namespace && !hasNs) args.push("-n", scope.namespace);
   if (scope?.context && !hasCtx) args.push("--context", scope.context);
   return args;
+}
+
+function contextArgs(cluster: Cluster): string[] {
+  const args = commandArgs("get pods", cluster);
+  const index = args.indexOf("--context");
+  if (index >= 0 && args[index + 1]) return ["--context", args[index + 1]!];
+  return [];
 }
 
 function liveBlast(plan: Plan, engineLine: string, cluster: Cluster) {
@@ -136,6 +146,32 @@ export function runUserLine(
     if (!script) return { output: "usage: kube completion bash|zsh|fish", ok: false, cluster };
     return { output: script, ok: true, cluster };
   }
+  if (meta === "undo") {
+    const parts = trimmed.split(/\s+/);
+    if (parts[1] === "list") {
+      const lines = listUndo().map(
+        (record) =>
+          `${record.id}  ${record.kind}/${record.name}  ${record.namespace}  ${record.refused ? "not restorable" : "restorable"}`,
+      );
+      return { output: lines.join("\n") || "nothing to undo", ok: true, cluster };
+    }
+    const record = latestUndo();
+    if (!record) return { output: "nothing to undo", ok: false, cluster };
+    const refusal = undoRefusal(record);
+    if (refusal) return { output: refusal, ok: false, cluster };
+    const preview = record.revision
+      ? `rollout undo ${record.kind}/${record.name} --to-revision=${record.revision}`
+      : `apply saved ${record.kind}/${record.name}`;
+    if (!host.yes && !host.confirm(`Undo ${preview}? [y/N] `)) {
+      return { output: "not run", ok: false, cluster };
+    }
+    const code = runLive(restoreArgs(record));
+    return {
+      output: code === 0 ? `restored ${record.kind}/${record.name}` : "undo failed",
+      ok: code === 0,
+      cluster,
+    };
+  }
   if (meta === "audit") {
     const parts = trimmed.split(/\s+/);
     if (parts[1] && parts[1] !== "tail") {
@@ -209,7 +245,19 @@ export function runUserLine(
       .replace(/(^|\s)--json(\s|$)/g, " ")
       .trim()
       .replace(/^["']|["']$/g, "");
-    const advice = advise(question, cluster);
+    const known = cluster.objects.filter((item) => item.kind === "pod").map((item) => item.name);
+    const named = podNameFrom(question, known);
+    const hit = cluster.objects.find((item) => item.kind === "pod" && item.name === named);
+    const ns = hit?.ns || namespaceOf(cluster) || "default";
+    const ctx = contextArgs(cluster);
+    const diagnosis = inspectPods({
+      question,
+      namespace: ns,
+      knownNames: known,
+      fetchJson: (args) => runJson([...args, ...ctx]),
+      fetchText: (args) => captureLive([...args, ...ctx]).stdout,
+    });
+    const advice = diagnosis ? adviceFrom(diagnosis) : advise(question, cluster);
     if (asJson) return { output: JSON.stringify(advice), ok: true, cluster };
     if (!process.stdin.isTTY) return { output: formatAdvice(advice), ok: true, cluster };
     process.stderr.write(`${formatAdvice(advice)}\n`);
@@ -221,6 +269,7 @@ export function runUserLine(
   const view = toEngine(trimmed, trimmed.length, "repl");
   const planned = planCommand(view.line, cluster);
   const started = Date.now();
+  const auditId = newAuditId();
   const rule = ruleFor(host.policy ?? null, cluster.current);
   const argv = commandArgs(view.line, cluster);
   const actor = host.agent ? "agent-cli" : process.stdin.isTTY ? "human-tty" : "human-cli";
@@ -231,7 +280,7 @@ export function runUserLine(
   ) => {
     if (!auditEnabled(host.policy ?? null)) return;
     appendAudit({
-      id: newAuditId(),
+      id: auditId,
       timestamp: new Date().toISOString(),
       actor,
       context: planned.context,
@@ -304,8 +353,9 @@ export function runUserLine(
       : host.yes
         ? "flag-yes"
         : "prompt-y";
-  const code = runLive(argv, { inheritStdin: options.inheritStdin });
   const dryRun = argv.some((token) => token === "--dry-run" || token.startsWith("--dry-run="));
+  if (!dryRun) rememberUndo(argv, cluster, auditId);
+  const code = runLive(argv, { inheritStdin: options.inheritStdin });
   writeAudit(dryRun ? "dry-run" : "executed", approver, code);
   return { output: "", ok: code === 0, cluster: applyLiveContext(cluster) };
 }
