@@ -20,6 +20,11 @@ if (args[0] === "delete") {
   process.exit(0);
 }
 
+if (process.env.KUBE_FAKE_DIAG === "oom" && args[0] === "logs" && args.includes("--previous")) {
+  process.stdout.write("password=secret\nboom\n");
+  process.exit(0);
+}
+
 if (args[0] === "logs" && args.includes("-f")) {
   process.stdout.write("following logs...\n");
   await new Promise((resolve) => setTimeout(resolve, 30_000));
@@ -108,6 +113,43 @@ if (output.startsWith("{range .items[*]}")) {
   process.exit(0);
 }
 
+if (
+  process.env.KUBE_FAKE_DIAG === "oom" &&
+  output === "json" &&
+  getAt >= 0 &&
+  /^pods?$/.test(resource)
+) {
+  const pod = {
+    kind: "Pod",
+    metadata: { name: "checkout", namespace: "default" },
+    spec: {
+      containers: [
+        {
+          name: "app",
+          image: "app:1",
+          resources: { limits: { memory: "64Mi" } },
+        },
+      ],
+    },
+    status: {
+      phase: "Running",
+      containerStatuses: [
+        {
+          name: "app",
+          ready: false,
+          restartCount: 3,
+          state: { waiting: { reason: "CrashLoopBackOff" } },
+          lastState: { terminated: { reason: "OOMKilled", exitCode: 137 } },
+        },
+      ],
+    },
+  };
+  const next = args[getAt + 2];
+  const named = next && !String(next).startsWith("-");
+  process.stdout.write(`${JSON.stringify(named ? pod : { items: [pod] })}\n`);
+  process.exit(0);
+}
+
 if (output === "json" && getAt >= 0 && resource === "events") {
   process.stdout.write(
     `${JSON.stringify({
@@ -139,6 +181,55 @@ if (output === "json" && getAt >= 0 && (resource === "secret" || resource === "s
 
 if (args[0] === "port-forward" || args[0] === "run" || args[0] === "expose") {
   process.stdout.write("ok\n");
+  process.exit(0);
+}
+
+const undoNamed =
+  process.env.KUBE_FAKE_UNDO === "1" &&
+  output === "json" &&
+  getAt >= 0 &&
+  args[getAt + 2] &&
+  !String(args[getAt + 2]).startsWith("-");
+if (undoNamed && /deploy/.test(resource)) {
+  process.stdout.write(
+    `${JSON.stringify({
+      apiVersion: "apps/v1",
+      kind: "Deployment",
+      metadata: {
+        name: "checkout",
+        namespace: "default",
+        resourceVersion: "99",
+        uid: "uid-1",
+        creationTimestamp: "2020-01-01T00:00:00Z",
+        generation: 4,
+        managedFields: [{ manager: "kube" }],
+        annotations: { "deployment.kubernetes.io/revision": "3" },
+      },
+      spec: { template: { spec: { containers: [{ name: "nginx", image: "nginx:1.0" }] } } },
+      status: { replicas: 1 },
+    })}\n`,
+  );
+  process.exit(0);
+}
+if (undoNamed && /secret/.test(resource)) {
+  process.stdout.write(
+    `${JSON.stringify({
+      kind: "Secret",
+      metadata: { name: "token", namespace: "default" },
+      data: { password: "cGFzcw==" },
+    })}\n`,
+  );
+  process.exit(0);
+}
+if (undoNamed && /^pod/.test(resource)) {
+  process.stdout.write(
+    `${JSON.stringify({
+      kind: "Pod",
+      metadata: { name: "worker-0", namespace: "default", resourceVersion: "5" },
+      spec: {},
+      status: { phase: "Running" },
+    })}\n`,
+  );
   process.exit(0);
 }
 

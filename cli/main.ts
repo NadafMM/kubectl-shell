@@ -12,6 +12,7 @@ import { metaOf } from "../src/lib/kube/shell-meta";
 import { stateDir, writePrivate } from "./private";
 import { redactLine } from "./redact";
 import { liveCluster, probeLive } from "./live";
+import { serveMcp } from "./mcp";
 import { openPromptInput, readSyncRetry } from "./tty";
 import { promptOf, type Cluster } from "../src/lib/kube/model";
 import { quoteArg } from "../src/lib/kube/parse";
@@ -441,6 +442,11 @@ export function main() {
     process.exit(result.ok ? 0 : 1);
   }
   const cluster = boot();
+
+  if (rest[0] === "mcp") {
+    serveMcp(cluster);
+    return;
+  }
 
   if (rest.length === 0) {
     if (!process.stdin.isTTY) {

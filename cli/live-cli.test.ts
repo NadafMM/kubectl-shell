@@ -357,10 +357,73 @@ test("an approved plan records its plan id and redacts literals", () => {
   assert.match(audit, new RegExp(`"approver":"plan-id:${planId}"`));
 });
 
+test("undo rolls a deployment back and refuses a Secret", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "kube-undo-"));
+  const env = { KUBE_FAKE_FIXTURE: "up", KUBE_FAKE_UNDO: "1", KUBE_TEST_HOME: home };
+  const changed = spawnKube(["set", "image", "deployment/checkout", "nginx=nginx:1.2"], env);
+  assert.equal(changed.status, 0);
+  const saved = fs
+    .readdirSync(path.join(home, ".kube-shell", "undo"))
+    .find((name) => name.endsWith(".json"));
+  assert.ok(saved);
+  const snapshot = fs.readFileSync(path.join(home, ".kube-shell", "undo", saved ?? ""), "utf8");
+  assert.doesNotMatch(snapshot, /resourceVersion/);
+  assert.doesNotMatch(snapshot, /"status"/);
+  const restored = spawnKube(["--yes", "undo"], env);
+  assert.equal(restored.status, 0);
+  const rolled = restored.lines.some((line) => {
+    const argv = JSON.parse(line) as string[];
+    return argv[0] === "rollout" && argv.includes("--to-revision=3");
+  });
+  assert.equal(rolled, true);
+  const secret = spawnKube(["label", "secret", "token", "env=prod"], env);
+  assert.equal(secret.status, 0);
+  const refused = spawnKube(["--yes", "undo"], env);
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr ?? "", /Secrets or ConfigMaps/);
+  assert.equal(
+    refused.lines.some((line) => (JSON.parse(line) as string[])[0] === "apply"),
+    false,
+  );
+});
+
 test("an unknown leading flag is an error", () => {
   const result = spawnKube(["--nope", "get", "pods"], { KUBE_FAKE_FIXTURE: "down" });
   assert.equal(result.status, 1);
   assert.match(result.stderr ?? "", /unknown flag/);
+});
+
+test("ask --json reports an OOMKilled pod from kubectl", () => {
+  const result = spawnKube(["ask", "--json", "why is checkout crashing"], {
+    KUBE_FAKE_FIXTURE: "up",
+    KUBE_FAKE_DIAG: "oom",
+  });
+  assert.equal(result.status, 0);
+  const body = JSON.parse(result.stdout ?? "") as {
+    findings: { cause: string; commands: string[] }[];
+  };
+  assert.match(body.findings[0]?.cause ?? "", /OOMKilled/);
+  assert.match(body.findings[0]?.cause ?? "", /memory limit 64Mi/);
+  assert.equal(JSON.stringify(body).includes("password=secret"), false);
+  const logged = result.lines.map((line) => JSON.parse(line) as string[]);
+  assert.equal(
+    logged.some((argv) => argv[0] === "get" && (argv[1] === "pod" || argv[1] === "pods")),
+    true,
+  );
+});
+
+test("ask about port-forward does not read pod logs", () => {
+  const result = spawnKube(["ask", "how do I port-forward"], {
+    KUBE_FAKE_FIXTURE: "up",
+    KUBE_FAKE_DIAG: "oom",
+  });
+  assert.equal(result.status, 0);
+  assert.match(result.stdout ?? "", /port-forward/);
+  const logged = result.lines.map((line) => JSON.parse(line) as string[]);
+  assert.equal(
+    logged.some((argv) => argv[0] === "logs"),
+    false,
+  );
 });
 
 test("--version prints the package.json version", () => {

@@ -24,8 +24,8 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 
 // cli/main.ts
-var import_node_fs9 = __toESM(require("node:fs"), 1);
-var import_node_path8 = __toESM(require("node:path"), 1);
+var import_node_fs11 = __toESM(require("node:fs"), 1);
+var import_node_path9 = __toESM(require("node:path"), 1);
 var import_node_readline = __toESM(require("node:readline"), 1);
 
 // src/lib/kube/shell-meta.ts
@@ -38,6 +38,7 @@ var SHELL_COMMANDS = [
   { value: "live", detail: "Reconnect to the cluster", weight: 86 },
   { value: "reset", detail: "Refresh names from the cluster", weight: 84 },
   { value: "audit", detail: "Show recent redacted command records", weight: 70 },
+  { value: "undo", detail: "Restore the previous saved object", weight: 68 },
   { value: "help", detail: "List shell commands", weight: 50 },
   { value: "clear", detail: "Clear the screen", weight: 40 },
   { value: "exit", detail: "Leave the shell", weight: 30, aliases: ["quit"] }
@@ -1801,11 +1802,11 @@ function agentRule(value) {
   if (typeof matchNonTty !== "boolean") return { error: "match_non_tty must be true or false" };
   return { allow, writeRequires, matchNonTty };
 }
-function ruleFor(policy, context) {
-  if (!policy) return EMPTY_RULE;
-  const exact = policy.contexts.find((item) => item.pattern === context);
+function ruleFor(policy2, context) {
+  if (!policy2) return EMPTY_RULE;
+  const exact = policy2.contexts.find((item) => item.pattern === context);
   if (exact) return exact.rule;
-  const wild = policy.contexts.filter((item) => item.pattern.endsWith("*") && context.startsWith(item.pattern.slice(0, -1))).sort((a, b) => b.pattern.length - a.pattern.length);
+  const wild = policy2.contexts.filter((item) => item.pattern.endsWith("*") && context.startsWith(item.pattern.slice(0, -1))).sort((a, b) => b.pattern.length - a.pattern.length);
   return wild[0]?.rule ?? EMPTY_RULE;
 }
 function policyFile(options) {
@@ -2513,13 +2514,13 @@ function fromItems(items, resource, asked, fetch, fallbackNs, reuse) {
     if (kind === "pod") owners.push(...ownerOf(item, namespace, name) ?? []);
     return [{ kind, namespace, name }];
   });
-  const singular = resource?.singular ?? (objects.every((object) => object.kind === "pod") ? "pod" : objects[0]?.kind ?? "object");
-  const partial = { kind: singular, namespace: fallbackNs };
+  const singular2 = resource?.singular ?? (objects.every((object) => object.kind === "pod") ? "pod" : objects[0]?.kind ?? "object");
+  const partial = { kind: singular2, namespace: fallbackNs };
   if (items.length > 0 && items.every((item) => CONTROLLERS.has(item.kind ?? ""))) {
     return expandControllers(items, objects, fetch, asked, fallbackNs, partial);
   }
   const base = pack(objects, partial, owners.length ? { owners } : {});
-  if (singular !== "pod" && !(!resource && objects.some((object) => object.kind === "pod"))) {
+  if (singular2 !== "pod" && !(!resource && objects.some((object) => object.kind === "pod"))) {
     return base;
   }
   const pods = items.flatMap((item) => {
@@ -2566,9 +2567,9 @@ function blastFiles(files, plan, asked, fetch) {
     for (const ref of read.refs) {
       const namespace = ref.namespace || fallbackNs;
       const key = `${ref.kind.toLowerCase()}\0${namespace}`;
-      const list = groups.get(key) ?? [];
-      list.push({ ...ref, namespace });
-      groups.set(key, list);
+      const list2 = groups.get(key) ?? [];
+      list2.push({ ...ref, namespace });
+      groups.set(key, list2);
     }
   }
   if (groups.size === 0) return skipped("no name or selector");
@@ -2961,10 +2962,10 @@ function redactJsonMap(block) {
 function redactJsonValue(value) {
   if (Array.isArray(value)) return value.map(redactJsonValue);
   if (value && typeof value === "object") {
-    const record = value;
+    const record2 = value;
     const out = {};
     let changed = false;
-    for (const [key, child] of Object.entries(record)) {
+    for (const [key, child] of Object.entries(record2)) {
       if (key === "data" || key === "stringData" || key === "binaryData") {
         if (child && typeof child === "object" && !Array.isArray(child)) {
           out[key] = redactJsonMap(child);
@@ -3180,10 +3181,10 @@ function ageOf(timestamp, now = Date.now()) {
   return `${Math.round(hours / 24)}d`;
 }
 function detailOf(item) {
-  const waiting = item.status?.containerStatuses?.find(
+  const waiting2 = item.status?.containerStatuses?.find(
     (container) => container.state?.waiting?.reason
   )?.state?.waiting?.reason;
-  if (waiting) return waiting;
+  if (waiting2) return waiting2;
   if (item.kind === "Deployment" || item.kind === "ReplicaSet" || item.kind === "StatefulSet") {
     return `${item.status?.readyReplicas ?? 0}/${item.status?.replicas ?? 0}`;
   }
@@ -3504,6 +3505,408 @@ function runLive(args, options = {}) {
   return result.status ?? 1;
 }
 
+// cli/diagnose.ts
+var SENSITIVE = /(password|token|secret|apikey|api-key|client-secret|client_secret)=\S+/gi;
+function obj(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value;
+}
+function str(value) {
+  return typeof value === "string" ? value : "";
+}
+function num(value) {
+  return typeof value === "number" ? value : void 0;
+}
+function list(value) {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const row = obj(item);
+    return row ? [row] : [];
+  });
+}
+function logTail(text) {
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  return lines.slice(-30).map((line) => line.replace(SENSITIVE, (match) => `${match.slice(0, match.indexOf("="))}=***`)).join(" | ");
+}
+function containersOf(pod) {
+  const spec = obj(pod.spec) ?? {};
+  return [...list(spec.containers), ...list(spec.initContainers)];
+}
+function statusesOf(pod) {
+  const status = obj(pod.status) ?? {};
+  return [...list(status.containerStatuses), ...list(status.initContainerStatuses)];
+}
+function containerNamed(pod, name) {
+  return containersOf(pod).find((item) => str(item.name) === name);
+}
+function terminated(status) {
+  return obj(obj(status.lastState)?.terminated) ?? obj(obj(status.state)?.terminated);
+}
+function waiting(status) {
+  return obj(obj(status.state)?.waiting);
+}
+function isOom(term) {
+  if (!term) return false;
+  if (str(term.reason) === "OOMKilled") return true;
+  return num(term.exitCode) === 137;
+}
+function memoryLimit(pod, name) {
+  const limits = obj(obj(containerNamed(pod, name)?.resources)?.limits);
+  return str(limits?.memory) || "none";
+}
+function imageOf(pod, name) {
+  return str(containerNamed(pod, name)?.image) || "unknown";
+}
+function describe(pod, ns) {
+  return `describe pod ${pod} -n ${ns}`;
+}
+function eventRows(events, podName) {
+  return events.flatMap((event) => {
+    const item = obj(event);
+    if (!item) return [];
+    const involved = str(obj(item.involvedObject)?.name);
+    if (involved && involved !== podName) return [];
+    return [item];
+  });
+}
+function messagesOf(rows) {
+  return rows.map((row) => str(row.message)).filter(Boolean);
+}
+function pullKind(message) {
+  if (/unauthorized|authentication|forbidden|\b401\b|\b403\b/i.test(message)) return "auth";
+  if (/not found|manifest unknown|\b404\b/i.test(message)) return "tag not found";
+  if (/timed out|timeout|i\/o timeout/i.test(message)) return "registry timeout";
+  return "pull failed";
+}
+function shortMessage(message) {
+  const line = message.split(/\r?\n/).map((item) => item.trim()).find(Boolean) ?? "";
+  return line.slice(0, 160);
+}
+function specRef(pod, containerName) {
+  const container = containerNamed(pod, containerName);
+  for (const env of list(container?.env)) {
+    const from = obj(env.valueFrom);
+    const secret = obj(from?.secretKeyRef);
+    if (str(secret?.name))
+      return { kind: "Secret", name: str(secret?.name), key: str(secret?.key) || void 0 };
+    const config = obj(from?.configMapKeyRef);
+    if (str(config?.name)) {
+      return { kind: "ConfigMap", name: str(config?.name), key: str(config?.key) || void 0 };
+    }
+  }
+  for (const from of list(container?.envFrom)) {
+    if (str(obj(from.secretRef)?.name))
+      return { kind: "Secret", name: str(obj(from.secretRef)?.name) };
+    if (str(obj(from.configMapRef)?.name)) {
+      return { kind: "ConfigMap", name: str(obj(from.configMapRef)?.name) };
+    }
+  }
+  for (const volume of list(obj(pod.spec)?.volumes)) {
+    if (str(obj(volume.secret)?.secretName))
+      return { kind: "Secret", name: str(obj(volume.secret)?.secretName) };
+    if (str(obj(volume.configMap)?.name))
+      return { kind: "ConfigMap", name: str(obj(volume.configMap)?.name) };
+  }
+  return null;
+}
+function configRef(pod, containerName, message) {
+  const keySecret = message.match(/key\s+(\S+)\s+in\s+Secret\s+(?:\S+\/)?([A-Za-z0-9.-]+)/i);
+  if (keySecret?.[1] && keySecret[2]) {
+    return { kind: "Secret", name: keySecret[2], key: keySecret[1].replace(/[.,]$/, "") };
+  }
+  const keyConfig = message.match(/key\s+(\S+)\s+in\s+ConfigMap\s+(?:\S+\/)?([A-Za-z0-9.-]+)/i);
+  if (keyConfig?.[1] && keyConfig[2]) {
+    return { kind: "ConfigMap", name: keyConfig[2], key: keyConfig[1].replace(/[.,]$/, "") };
+  }
+  const secretMissing = message.match(/secret\s+"([^"]+)"\s+not found/i);
+  if (secretMissing?.[1]) return { kind: "Secret", name: secretMissing[1] };
+  const configMissing = message.match(/configmap\s+"([^"]+)"\s+not found/i);
+  if (configMissing?.[1]) return { kind: "ConfigMap", name: configMissing[1] };
+  return specRef(pod, containerName);
+}
+function isPending(pod) {
+  const status = obj(pod.status);
+  if (str(status?.phase) === "Pending") return true;
+  return list(status?.conditions).some(
+    (condition) => str(condition.type) === "PodScheduled" && str(condition.status) === "False"
+  );
+}
+function claimName(pod, messages) {
+  for (const volume of list(obj(pod.spec)?.volumes)) {
+    const name = str(obj(volume.persistentVolumeClaim)?.claimName);
+    if (name) return name;
+  }
+  const blob = messages.join("\n");
+  const quoted = blob.match(/persistentvolumeclaim\s+"([^"]+)"/i);
+  return quoted?.[1] || "unknown";
+}
+function pendingCause(pod, messages) {
+  const blob = messages.join("\n");
+  if (/insufficient cpu/i.test(blob)) return "Pending: insufficient cpu";
+  if (/insufficient memory/i.test(blob)) return "Pending: insufficient memory";
+  if (/persistentvolumeclaim|unbound immediate/i.test(blob)) {
+    return `Pending: unbound PersistentVolumeClaim ${claimName(pod, messages)}`;
+  }
+  if (/taint/i.test(blob)) return "Pending: node taint";
+  if (/affinity/i.test(blob)) return "Pending: node affinity mismatch";
+  return "Pending: unschedulable";
+}
+function probeTarget(pod, kind) {
+  const field = kind === "readiness" ? "readinessProbe" : "livenessProbe";
+  const containers = containersOf(pod);
+  const container = containers.find((item) => obj(item[field])) ?? containers[0];
+  const probe = obj(container?.[field]);
+  if (!probe) return "probe";
+  const http = obj(probe.httpGet);
+  if (http) {
+    const path10 = str(http.path) || "/";
+    return `http://:${http.port ?? ""}${path10.startsWith("/") ? path10 : `/${path10}`}`;
+  }
+  const tcp = obj(probe.tcpSocket);
+  if (tcp) return `tcp:${tcp.port ?? ""}`;
+  const execProbe = obj(probe.exec);
+  if (execProbe) {
+    const command = Array.isArray(execProbe.command) ? execProbe.command.map(str).filter(Boolean).join(" ") : "";
+    return command ? `exec ${command}` : "exec";
+  }
+  const grpc = obj(probe.grpc);
+  if (grpc) return `grpc:${grpc.port ?? ""}`;
+  return "probe";
+}
+function diagnosePod(pod, events = [], previousLogs2 = {}) {
+  const body = obj(pod);
+  const name = str(obj(body?.metadata)?.name);
+  if (!body || !name) return null;
+  const ns = str(obj(body.metadata)?.namespace) || "default";
+  const rows = eventRows(events, name);
+  const findings = [];
+  for (const status of statusesOf(body)) {
+    const container = str(status.name) || "container";
+    const term = terminated(status);
+    if (!isOom(term)) continue;
+    const exit = num(term?.exitCode) ?? 137;
+    findings.push({
+      rule: "oom",
+      cause: `container ${container} was OOMKilled (exit ${exit}); memory limit ${memoryLimit(body, container)}`,
+      commands: [describe(name, ns), `logs ${name} -c ${container} --previous -n ${ns}`]
+    });
+  }
+  for (const status of statusesOf(body)) {
+    const container = str(status.name) || "container";
+    const term = terminated(status);
+    if (isOom(term)) continue;
+    const reason = str(waiting(status)?.reason);
+    const exit = num(term?.exitCode);
+    const crashed = reason === "CrashLoopBackOff" || exit !== void 0 && exit !== 0;
+    if (!crashed) continue;
+    const tail = logTail(previousLogs2[container] ?? "");
+    const code = exit === void 0 ? "unknown" : String(exit);
+    findings.push({
+      rule: "crash",
+      cause: tail ? `container ${container} exited ${code}; ${tail}` : `container ${container} exited ${code}`,
+      commands: [`logs ${name} -c ${container} --previous -n ${ns}`]
+    });
+  }
+  for (const status of statusesOf(body)) {
+    const container = str(status.name) || "container";
+    const wait = waiting(status);
+    const reason = str(wait?.reason);
+    if (reason !== "ImagePullBackOff" && reason !== "ErrImagePull") continue;
+    const eventMessage = messagesOf(rows).find(
+      (message2) => /pull|manifest|unauthorized|timeout|not found/i.test(message2)
+    );
+    const message = eventMessage || str(wait?.message);
+    const shown = shortMessage(message);
+    findings.push({
+      rule: "image",
+      cause: `image ${imageOf(body, container)} failed to pull (${pullKind(message)})${shown ? `; ${shown}` : ""}`,
+      commands: [describe(name, ns)]
+    });
+  }
+  for (const status of statusesOf(body)) {
+    const container = str(status.name) || "container";
+    const wait = waiting(status);
+    if (str(wait?.reason) !== "CreateContainerConfigError") continue;
+    const ref = configRef(body, container, `${str(wait?.message)}
+${messagesOf(rows).join("\n")}`);
+    const kind = ref?.kind ?? "Secret";
+    const resource = kind === "Secret" ? "secret" : "configmap";
+    const what = ref ? `missing ${kind} ${ref.name}${ref.key ? ` key ${ref.key}` : ""}` : "missing Secret or ConfigMap";
+    findings.push({
+      rule: "config",
+      cause: what,
+      commands: [describe(name, ns), ...ref ? [`get ${resource} ${ref.name} -n ${ns}`] : []]
+    });
+  }
+  const unscheduled = list(obj(body.status)?.conditions).some(
+    (condition) => str(condition.type) === "PodScheduled" && str(condition.status) === "False"
+  );
+  const schedulingEvent = rows.some((row) => str(row.reason) === "FailedScheduling");
+  if (unscheduled || schedulingEvent) {
+    const status = obj(body.status);
+    const conditionMessages = list(status?.conditions).filter((condition) => str(condition.type) === "PodScheduled").map((condition) => str(condition.message)).filter(Boolean);
+    findings.push({
+      rule: "pending",
+      cause: pendingCause(body, [...messagesOf(rows), ...conditionMessages]),
+      commands: [describe(name, ns), `get events -n ${ns}`]
+    });
+  }
+  const unhealthy2 = rows.filter((row) => str(row.reason) === "Unhealthy");
+  if (unhealthy2.length > 0) {
+    const messages = messagesOf(unhealthy2);
+    const live = messages.filter((message) => /liveness/i.test(message)).length;
+    const ready = messages.filter((message) => /readiness/i.test(message)).length;
+    const kind = live > ready ? "liveness" : "readiness";
+    const label = unhealthy2.length === 1 ? "1 Unhealthy warning" : `${unhealthy2.length} Unhealthy warnings`;
+    findings.push({
+      rule: "probe",
+      cause: `${kind} probe ${probeTarget(body, kind)} failed (${label})`,
+      commands: [describe(name, ns)]
+    });
+  }
+  const kept = findings.slice(0, 3);
+  if (kept.length === 0) return null;
+  return { pod: name, namespace: ns, findings: kept };
+}
+var HEALTH = /crash|backoff|restart|oom|not starting|failing|pending|unschedul|cannot schedule|can't schedule|insufficient|imagepull|errimage|pull back|registry|not ready|unhealthy|readiness|liveness|probe|createcontainer|configerror/i;
+var STOP = /* @__PURE__ */ new Set([
+  "why",
+  "is",
+  "the",
+  "a",
+  "an",
+  "pod",
+  "pods",
+  "how",
+  "do",
+  "i",
+  "what",
+  "my",
+  "this",
+  "that",
+  "in",
+  "on",
+  "for",
+  "to",
+  "and",
+  "or",
+  "it",
+  "its",
+  "of",
+  "with",
+  "was",
+  "are",
+  "not",
+  "from",
+  "crashing",
+  "crash",
+  "pending",
+  "failing",
+  "failed",
+  "unhealthy",
+  "restarting",
+  "down",
+  "stuck",
+  "oom",
+  "backoff",
+  "imagepull",
+  "probe"
+]);
+function podNameFrom(question, knownNames = []) {
+  const slash = question.match(/\bpod\/([a-z0-9][-a-z0-9.]*)/i);
+  if (slash?.[1]) return slash[1];
+  const ranked = knownNames.filter((name) => name.length >= 3).sort((a, b) => b.length - a.length);
+  const q = question.toLowerCase();
+  for (const known of ranked) {
+    if (q.includes(known.toLowerCase())) return known;
+  }
+  const explicit = question.match(/\bpod\s+([a-z0-9][-a-z0-9.]*)/i);
+  if (explicit?.[1] && !STOP.has(explicit[1].toLowerCase())) return explicit[1];
+  return void 0;
+}
+function adviceFrom(diagnosis) {
+  const commands = [];
+  for (const finding of diagnosis.findings) {
+    for (const command of finding.commands) {
+      if (!commands.includes(command)) commands.push(command);
+    }
+  }
+  return {
+    why: diagnosis.findings.map((finding) => finding.cause).join("\n"),
+    commands,
+    findings: diagnosis.findings
+  };
+}
+function itemsOf3(json) {
+  if (Array.isArray(json)) return json;
+  const body = obj(json);
+  return Array.isArray(body?.items) ? body.items : [];
+}
+function needsPreviousLog(status) {
+  const term = terminated(status);
+  if (isOom(term)) return false;
+  const exit = num(term?.exitCode);
+  return str(waiting(status)?.reason) === "CrashLoopBackOff" || exit !== void 0 && exit !== 0;
+}
+function candidate(pod) {
+  const body = obj(pod);
+  if (!body) return false;
+  if (isPending(body)) return true;
+  return statusesOf(body).some((status) => {
+    if (status.ready === false) return true;
+    if (str(waiting(status)?.reason)) return true;
+    const exit = num(terminated(status)?.exitCode);
+    return exit !== void 0 && exit !== 0;
+  });
+}
+function eventsFor(name, ns, fetchJson2) {
+  const result = fetchJson2([
+    "get",
+    "events",
+    "-n",
+    ns,
+    "--field-selector",
+    `involvedObject.name=${name}`,
+    "-o",
+    "json"
+  ]);
+  if (!result.ok) return [];
+  return itemsOf3(result.json);
+}
+function previousLogs(pod, ns, fetchText) {
+  const logs = {};
+  const podName = str(obj(pod.metadata)?.name);
+  for (const status of statusesOf(pod)) {
+    const container = str(status.name);
+    if (!podName || !container || !needsPreviousLog(status)) continue;
+    logs[container] = fetchText(["logs", podName, "-n", ns, "-c", container, "--previous"]);
+  }
+  return logs;
+}
+function diagnoseFetched(pod, ns, fetchJson2, fetchText) {
+  const body = obj(pod);
+  const name = str(obj(body?.metadata)?.name);
+  if (!body || !name || !candidate(body)) return null;
+  return diagnosePod(body, eventsFor(name, ns, fetchJson2), previousLogs(body, ns, fetchText));
+}
+function inspectPods(input) {
+  if (!HEALTH.test(input.question)) return null;
+  const ns = input.namespace || "default";
+  const named = podNameFrom(input.question, input.knownNames ?? []);
+  if (named) {
+    const got = input.fetchJson(["get", "pod", named, "-n", ns, "-o", "json"]);
+    if (!got.ok || got.json == null) return null;
+    return diagnoseFetched(got.json, ns, input.fetchJson, input.fetchText);
+  }
+  const list2 = input.fetchJson(["get", "pods", "-n", ns, "-o", "json"]);
+  if (!list2.ok) return null;
+  for (const pod of itemsOf3(list2.json).slice(0, 10)) {
+    const found = diagnoseFetched(pod, ns, input.fetchJson, input.fetchText);
+    if (found) return found;
+  }
+  return null;
+}
+
 // cli/audit.ts
 var import_node_crypto = __toESM(require("node:crypto"), 1);
 var import_node_fs6 = __toESM(require("node:fs"), 1);
@@ -3570,8 +3973,8 @@ var MAX_BYTES = 5 * 1024 * 1024;
 function auditPath() {
   return import_node_path6.default.join(stateDir(), "audit.jsonl");
 }
-function auditEnabled(policy, env = process.env) {
-  if (policy?.audit === "required") return true;
+function auditEnabled(policy2, env = process.env) {
+  if (policy2?.audit === "required") return true;
   return env.KUBE_SHELL_AUDIT !== "0";
 }
 function redactArgv(argv) {
@@ -3616,9 +4019,9 @@ var TTL_MS2 = 5 * 60 * 1e3;
 function planPath(id) {
   return import_node_path7.default.join(stateDir(), "plans", `${id}.json`);
 }
-function mintPlan(record, now = Date.now()) {
+function mintPlan(record2, now = Date.now()) {
   const planId = import_node_crypto2.default.randomBytes(16).toString("hex");
-  const stored = { planId, ...record, expires: now + TTL_MS2 };
+  const stored = { planId, ...record2, expires: now + TTL_MS2 };
   writePrivate(planPath(planId), JSON.stringify(stored));
   return planId;
 }
@@ -3640,10 +4043,138 @@ function consumePlan(planId, expected, now = Date.now()) {
   return { ok: true };
 }
 
-// cli/tty.ts
+// cli/undo.ts
 var import_node_fs8 = __toESM(require("node:fs"), 1);
+var import_node_path8 = __toESM(require("node:path"), 1);
+var SNAPSHOT_VERBS = /* @__PURE__ */ new Set(["apply", "replace", "patch", "scale", "label", "annotate", "set"]);
+var WORKLOADS = /* @__PURE__ */ new Set(["deployment", "statefulset", "daemonset"]);
+var DAY_MS = 24 * 60 * 60 * 1e3;
+function undoDir() {
+  return import_node_path8.default.join(stateDir(), "undo");
+}
+function singular(token) {
+  return resolveResource(token)?.singular ?? token.toLowerCase();
+}
+function namedTarget(argv) {
+  const words = positionalWords(argv).words;
+  const verb = words[0] ?? "";
+  if (!SNAPSHOT_VERBS.has(verb)) return null;
+  const token = verb === "set" ? words[2] : words[1];
+  const plainName = verb === "set" ? words[3] : words[2];
+  if (!token) return null;
+  if (token.includes("/")) {
+    const [kind, name] = token.split("/");
+    if (!kind || !name) return null;
+    return { verb, kind: singular(kind), name };
+  }
+  if (!plainName || plainName.startsWith("-")) return null;
+  return { verb, kind: singular(token), name: plainName };
+}
+function cleanSnapshot(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const copy = JSON.parse(JSON.stringify(value));
+  delete copy.status;
+  if (copy.metadata) {
+    for (const key of [
+      "resourceVersion",
+      "uid",
+      "creationTimestamp",
+      "generation",
+      "managedFields"
+    ]) {
+      delete copy.metadata[key];
+    }
+  }
+  return copy;
+}
+function namespaceFrom(argv, cluster) {
+  return flagValue(argv, ["-n", "--namespace"]) || namespaceOf(cluster);
+}
+function rememberUndo(argv, cluster, id, now = Date.now()) {
+  const target = namedTarget(argv);
+  if (!target) return;
+  const namespace = namespaceFrom(argv, cluster);
+  const base = {
+    id,
+    at: now,
+    verb: target.verb,
+    kind: target.kind,
+    name: target.name,
+    namespace,
+    context: cluster.current
+  };
+  if (target.kind === "secret" || target.kind === "configmap") {
+    base.refused = `${target.kind} objects are not snapshotted`;
+    writePrivate(import_node_path8.default.join(undoDir(), `${id}.json`), JSON.stringify(base));
+    return;
+  }
+  const got = captureLive(["get", target.kind, target.name, "-n", namespace, "-o", "json"]);
+  if (got.code !== 0 || !got.stdout.trim()) return;
+  let live;
+  try {
+    live = JSON.parse(got.stdout);
+  } catch {
+    return;
+  }
+  if (!live.metadata?.name) return;
+  base.snapshot = cleanSnapshot(live);
+  const revision = live.metadata.annotations?.["deployment.kubernetes.io/revision"];
+  if (revision && WORKLOADS.has(target.kind)) base.revision = revision;
+  writePrivate(import_node_path8.default.join(undoDir(), `${id}.json`), JSON.stringify(base));
+  pruneUndo(now);
+}
+function listUndo(now = Date.now()) {
+  const dir = undoDir();
+  if (!import_node_fs8.default.existsSync(dir)) return [];
+  const records = [];
+  for (const name of import_node_fs8.default.readdirSync(dir)) {
+    if (!name.endsWith(".json")) continue;
+    try {
+      const record2 = JSON.parse(import_node_fs8.default.readFileSync(import_node_path8.default.join(dir, name), "utf8"));
+      if (now - record2.at <= DAY_MS) records.push(record2);
+    } catch {
+    }
+  }
+  return records.sort((a, b) => b.at - a.at).slice(0, 20);
+}
+function latestUndo(now = Date.now()) {
+  return listUndo(now)[0] ?? null;
+}
+function undoRefusal(record2) {
+  if (record2.kind === "secret" || record2.kind === "configmap") {
+    return "kube undo does not restore Secrets or ConfigMaps. They are not snapshotted, because a restore without their data would destroy it.";
+  }
+  if (record2.kind === "pod") {
+    return "kube undo cannot restore a Pod. A controller recreates pods.";
+  }
+  return null;
+}
+function restoreArgs(record2) {
+  if (record2.revision && WORKLOADS.has(record2.kind)) {
+    return [
+      "rollout",
+      "undo",
+      `${record2.kind}/${record2.name}`,
+      `-n`,
+      record2.namespace,
+      `--to-revision=${record2.revision}`
+    ];
+  }
+  return ["apply", "-n", record2.namespace, "-f", "-"];
+}
+function pruneUndo(now) {
+  const records = listUndo(now);
+  const keep = new Set(records.map((record2) => record2.id));
+  for (const name of import_node_fs8.default.readdirSync(undoDir())) {
+    const id = name.replace(/\.json$/, "");
+    if (!keep.has(id)) import_node_fs8.default.rmSync(import_node_path8.default.join(undoDir(), name), { force: true });
+  }
+}
+
+// cli/tty.ts
+var import_node_fs9 = __toESM(require("node:fs"), 1);
 var RETRY = /* @__PURE__ */ new Set(["EAGAIN", "EWOULDBLOCK", "EINTR"]);
-function openPromptInput(platform = process.platform, open = (file) => import_node_fs8.default.openSync(file, "r")) {
+function openPromptInput(platform = process.platform, open = (file) => import_node_fs9.default.openSync(file, "r")) {
   const stdin = { fd: 0, close: () => {
   } };
   if (platform === "win32") return stdin;
@@ -3653,9 +4184,9 @@ function openPromptInput(platform = process.platform, open = (file) => import_no
   } catch {
     return stdin;
   }
-  return { fd, close: () => import_node_fs8.default.closeSync(fd) };
+  return { fd, close: () => import_node_fs9.default.closeSync(fd) };
 }
-function readSyncRetry(fd, buf, read = (f, b) => import_node_fs8.default.readSync(f, b, 0, b.length, null), sleep = sleepMs) {
+function readSyncRetry(fd, buf, read = (f, b) => import_node_fs9.default.readSync(f, b, 0, b.length, null), sleep = sleepMs) {
   for (; ; ) {
     try {
       return read(fd, buf);
@@ -4053,14 +4584,14 @@ function openView(clusterIn, options) {
     const scroll = state.scroll;
     const width = Math.max(40, process.stdout.columns || 80);
     const height = Math.max(12, process.stdout.rows || 24);
-    const list = rows();
-    if (cursor >= list.length) cursor = Math.max(0, list.length - 1);
+    const list2 = rows();
+    if (cursor >= list2.length) cursor = Math.max(0, list2.length - 1);
     const lines = [];
     const label = BOARDS.find((item) => item.id === board)?.label ?? board;
     lines.push(
       paint(
         fit(
-          ` kube  ${cluster.current}  ${all ? "all namespaces" : ns}  ${label}  ${list.length}`,
+          ` kube  ${cluster.current}  ${all ? "all namespaces" : ns}  ${label}  ${list2.length}`,
           width
         ),
         "head"
@@ -4113,10 +4644,10 @@ function openView(clusterIn, options) {
       const room = height - 4;
       const start = Math.max(
         0,
-        Math.min(cursor - Math.floor(room / 2), Math.max(0, list.length - room))
+        Math.min(cursor - Math.floor(room / 2), Math.max(0, list2.length - room))
       );
-      for (let i = start; i < Math.min(list.length, start + room); i += 1) {
-        const row = list[i];
+      for (let i = start; i < Math.min(list2.length, start + room); i += 1) {
+        const row = list2[i];
         const body = `${showNs ? fit(row.ns, 16) : ""}${fit(row.name, nameW)}  ${fit(row.info, 16)}  ${row.status}  ${row.age}`;
         lines.push(paint(fit(body, width), i === cursor ? "selected" : toneOf(row.status)));
       }
@@ -4132,9 +4663,9 @@ function openView(clusterIn, options) {
     draw();
     for (; ; ) {
       for (const key of readKeys(input.fd)) {
-        const list = rows();
+        const list2 = rows();
         const step = reduce(state, key, {
-          rows: list,
+          rows: list2,
           namespaces: cluster.namespaces.map((item) => item.name)
         });
         state = step.state;
@@ -4142,7 +4673,7 @@ function openView(clusterIn, options) {
         if (effect.type === "quit") return cluster;
         if (effect.type === "reload") reload();
         if (effect.type === "describe" || effect.type === "logs") {
-          const row = list[effect.index];
+          const row = list2[effect.index];
           if (row) {
             text = lookupText(effect.type === "logs" ? "logs" : "describe", row).split("\n");
             state = { ...state, textLength: text.length, scroll: 0, mode: "text" };
@@ -4158,7 +4689,7 @@ function openView(clusterIn, options) {
           }
         }
         if (effect.type === "arm-delete") {
-          const row = list[effect.index];
+          const row = list2[effect.index];
           if (row) {
             pendingDelete = planCommand(deleteEngineLine(row), cluster);
             state = {
@@ -4168,7 +4699,7 @@ function openView(clusterIn, options) {
           }
         }
         if (effect.type === "delete") {
-          const row = list[effect.index];
+          const row = list2[effect.index];
           const planned = pendingDelete ?? (row ? planCommand(deleteEngineLine(row), cluster) : null);
           pendingDelete = null;
           if (planned) {
@@ -4201,6 +4732,12 @@ function commandArgs(engineLine, cluster) {
   if (scope?.namespace && !hasNs) args.push("-n", scope.namespace);
   if (scope?.context && !hasCtx) args.push("--context", scope.context);
   return args;
+}
+function contextArgs2(cluster) {
+  const args = commandArgs("get pods", cluster);
+  const index = args.indexOf("--context");
+  if (index >= 0 && args[index + 1]) return ["--context", args[index + 1]];
+  return [];
 }
 function liveBlast(plan, engineLine, cluster) {
   const started = Date.now();
@@ -4264,6 +4801,29 @@ function runUserLine(line, cluster, host2, options = {}) {
     const script = completionScript(shell);
     if (!script) return { output: "usage: kube completion bash|zsh|fish", ok: false, cluster };
     return { output: script, ok: true, cluster };
+  }
+  if (meta === "undo") {
+    const parts = trimmed.split(/\s+/);
+    if (parts[1] === "list") {
+      const lines = listUndo().map(
+        (record3) => `${record3.id}  ${record3.kind}/${record3.name}  ${record3.namespace}  ${record3.refused ? "not restorable" : "restorable"}`
+      );
+      return { output: lines.join("\n") || "nothing to undo", ok: true, cluster };
+    }
+    const record2 = latestUndo();
+    if (!record2) return { output: "nothing to undo", ok: false, cluster };
+    const refusal = undoRefusal(record2);
+    if (refusal) return { output: refusal, ok: false, cluster };
+    const preview = record2.revision ? `rollout undo ${record2.kind}/${record2.name} --to-revision=${record2.revision}` : `apply saved ${record2.kind}/${record2.name}`;
+    if (!host2.yes && !host2.confirm(`Undo ${preview}? [y/N] `)) {
+      return { output: "not run", ok: false, cluster };
+    }
+    const code2 = runLive(restoreArgs(record2));
+    return {
+      output: code2 === 0 ? `restored ${record2.kind}/${record2.name}` : "undo failed",
+      ok: code2 === 0,
+      cluster
+    };
   }
   if (meta === "audit") {
     const parts = trimmed.split(/\s+/);
@@ -4331,7 +4891,19 @@ ${text}` : formatPlan(planned2),
   if (meta === "ask") {
     const asJson = /(^|\s)--json(\s|$)/.test(trimmed);
     const question = trimmed.replace(/^\?\s*/, "").replace(/^ask\s+/, "").replace(/(^|\s)--json(\s|$)/g, " ").trim().replace(/^["']|["']$/g, "");
-    const advice = advise(question, cluster);
+    const known = cluster.objects.filter((item) => item.kind === "pod").map((item) => item.name);
+    const named = podNameFrom(question, known);
+    const hit = cluster.objects.find((item) => item.kind === "pod" && item.name === named);
+    const ns = hit?.ns || namespaceOf(cluster) || "default";
+    const ctx = contextArgs2(cluster);
+    const diagnosis = inspectPods({
+      question,
+      namespace: ns,
+      knownNames: known,
+      fetchJson: (args) => runJson([...args, ...ctx]),
+      fetchText: (args) => captureLive([...args, ...ctx]).stdout
+    });
+    const advice = diagnosis ? adviceFrom(diagnosis) : advise(question, cluster);
     if (asJson) return { output: JSON.stringify(advice), ok: true, cluster };
     if (!process.stdin.isTTY) return { output: formatAdvice(advice), ok: true, cluster };
     process.stderr.write(`${formatAdvice(advice)}
@@ -4344,13 +4916,14 @@ ${text}` : formatPlan(planned2),
   const view = toEngine(trimmed, trimmed.length, "repl");
   const planned = planCommand(view.line, cluster);
   const started = Date.now();
+  const auditId = newAuditId();
   const rule = ruleFor(host2.policy ?? null, cluster.current);
   const argv = commandArgs(view.line, cluster);
   const actor = host2.agent ? "agent-cli" : process.stdin.isTTY ? "human-tty" : "human-cli";
   const writeAudit = (decision, approver2, exitCode) => {
     if (!auditEnabled(host2.policy ?? null)) return;
     appendAudit({
-      id: newAuditId(),
+      id: auditId,
       timestamp: (/* @__PURE__ */ new Date()).toISOString(),
       actor,
       context: planned.context,
@@ -4408,15 +4981,176 @@ ${extra}` : ""}
     }
   }
   const approver = needsPlan ? `plan-id:${host2.planId}` : rule.confirm === "typed" && host2.yes ? "typed-context" : host2.yes ? "flag-yes" : "prompt-y";
-  const code = runLive(argv, { inheritStdin: options.inheritStdin });
   const dryRun2 = argv.some((token) => token === "--dry-run" || token.startsWith("--dry-run="));
+  if (!dryRun2) rememberUndo(argv, cluster, auditId);
+  const code = runLive(argv, { inheritStdin: options.inheritStdin });
   writeAudit(dryRun2 ? "dry-run" : "executed", approver, code);
   return { output: "", ok: code === 0, cluster: applyLiveContext(cluster) };
 }
 
+// cli/mcp.ts
+var import_node_fs10 = __toESM(require("node:fs"), 1);
+var DEFAULT_ALLOW = ["get", "describe", "logs", "plan"];
+function policy() {
+  const loaded = readPolicy(policyFile({ agent: true }));
+  if (loaded && "error" in loaded) return null;
+  return loaded;
+}
+function toolResult(id, text, isError = false) {
+  return {
+    jsonrpc: "2.0",
+    id,
+    result: { content: [{ type: "text", text }], isError }
+  };
+}
+function record(policy2, cluster, argv, risk, decision, exitCode, started, approver) {
+  if (!auditEnabled(policy2)) return;
+  appendAudit({
+    id: newAuditId(),
+    timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+    actor: "mcp",
+    context: cluster.current,
+    namespace: namespaceOf(cluster),
+    argv: redactArgv(argv),
+    risk,
+    decision,
+    approver,
+    exitCode,
+    durationMs: Date.now() - started
+  });
+}
+function plannedOf(command, cluster) {
+  const view = toEngine(command, command.length, "repl");
+  const planned = planCommand(view.line, cluster);
+  const argv = commandArgs(view.line, cluster);
+  return { planned, argv };
+}
+function handleRpc(message, cluster) {
+  if (message.id === void 0 || message.id === null) return null;
+  const id = message.id;
+  if (message.method === "initialize") {
+    return {
+      jsonrpc: "2.0",
+      id,
+      result: {
+        protocolVersion: "2024-11-05",
+        capabilities: { tools: {} },
+        serverInfo: { name: "kube", version: "0.5.1" }
+      }
+    };
+  }
+  if (message.method === "tools/list") {
+    return {
+      jsonrpc: "2.0",
+      id,
+      result: {
+        tools: [
+          { name: "kube_context", description: "Current context, namespace, and policy summary" },
+          { name: "kube_plan", description: "Plan a command and mint a single-use plan id" },
+          { name: "kube_execute", description: "Run an allowed read, or a write with a plan id" }
+        ]
+      }
+    };
+  }
+  if (message.method !== "tools/call") {
+    return { jsonrpc: "2.0", id, error: { code: -32601, message: "method not found" } };
+  }
+  const name = message.params?.name ?? "";
+  const args = message.params?.arguments ?? {};
+  const active = policy();
+  const rule = ruleFor(active, cluster.current);
+  const allow = active?.agents?.allow ?? DEFAULT_ALLOW;
+  if (name === "kube_context") {
+    return toolResult(
+      id,
+      JSON.stringify({
+        context: cluster.current,
+        namespace: namespaceOf(cluster),
+        guarded: rule.mode === "guarded",
+        confirm: rule.confirm,
+        allow
+      })
+    );
+  }
+  const command = typeof args.command === "string" ? args.command : "";
+  if (!command) return toolResult(id, "command is required", true);
+  const { planned, argv } = plannedOf(command, cluster);
+  const started = Date.now();
+  if (name === "kube_plan") {
+    const blast = blastRadius(planned, argv, (kubectl) => runJson(kubectl, 3e3));
+    const planId = mintPlan({ context: planned.context, namespace: planned.namespace, argv });
+    record(active, cluster, argv, planned.risk, "executed", 0, started, "none");
+    return toolResult(id, JSON.stringify({ ...planned, blast, planId, text: formatBlast(blast) }));
+  }
+  if (name !== "kube_execute") return toolResult(id, "unknown tool", true);
+  if (rule.deny.includes(planned.verb)) {
+    record(active, cluster, argv, planned.risk, "denied-policy", null, started, "none");
+    return toolResult(id, `refused: ${planned.verb} is denied by policy`, true);
+  }
+  if (planned.mutating) {
+    const typedBlocked = rule.confirm === "typed" && !allow.includes(planned.verb);
+    const planId = typeof args.planId === "string" ? args.planId : "";
+    if (typedBlocked || !planId) {
+      record(active, cluster, argv, planned.risk, "denied-policy", null, started, "none");
+      return toolResult(id, "refused: mutating commands need a plan id", true);
+    }
+    const consumed = consumePlan(planId, {
+      context: planned.context,
+      namespace: planned.namespace,
+      argv
+    });
+    if (!consumed.ok) {
+      record(active, cluster, argv, planned.risk, "denied-policy", null, started, "none");
+      return toolResult(id, `refused: ${consumed.reason}`, true);
+    }
+    const result2 = captureLive(argv);
+    record(
+      active,
+      cluster,
+      argv,
+      planned.risk,
+      "executed",
+      result2.code,
+      started,
+      `plan-id:${planId}`
+    );
+    return toolResult(id, result2.stdout || result2.stderr, result2.code !== 0);
+  }
+  if (!allow.includes(planned.verb)) {
+    record(active, cluster, argv, planned.risk, "denied-policy", null, started, "none");
+    return toolResult(id, `refused: ${planned.verb} is not allowed`, true);
+  }
+  const result = captureLive(argv);
+  const stdout = sensitiveStdoutKind(argv) !== null ? redactKubectlStdout(argv, result.stdout) : result.stdout;
+  record(active, cluster, argv, planned.risk, "executed", result.code, started, "none");
+  return toolResult(id, stdout, result.code !== 0);
+}
+function serveMcp(cluster) {
+  const buf = import_node_fs10.default.readFileSync(0);
+  let offset = 0;
+  while (offset + 4 < buf.length) {
+    const headerEnd = buf.indexOf("\r\n\r\n", offset);
+    if (headerEnd < 0) break;
+    const header = buf.subarray(offset, headerEnd).toString("utf8");
+    const match = /Content-Length:\s*(\d+)/i.exec(header);
+    if (!match) break;
+    const length = Number(match[1]);
+    const start = headerEnd + 4;
+    const body = buf.subarray(start, start + length).toString("utf8");
+    offset = start + length;
+    const response = handleRpc(JSON.parse(body), cluster);
+    if (!response) continue;
+    const payload = Buffer.from(JSON.stringify(response));
+    process.stdout.write(`Content-Length: ${payload.length}\r
+\r
+`);
+    process.stdout.write(payload);
+  }
+}
+
 // cli/main.ts
 var VERSION = true ? "0.5.1" : "0.0.0-dev";
-var HISTORY = import_node_path8.default.join(stateDir(), "history");
+var HISTORY = import_node_path9.default.join(stateDir(), "history");
 var session = {
   yes: false,
   agent: false,
@@ -4426,7 +5160,7 @@ var session = {
 };
 function loadHistory() {
   try {
-    return import_node_fs9.default.readFileSync(HISTORY, "utf8").split("\n").map((line) => line.trimEnd()).filter(Boolean).slice(-200).reverse();
+    return import_node_fs11.default.readFileSync(HISTORY, "utf8").split("\n").map((line) => line.trimEnd()).filter(Boolean).slice(-200).reverse();
   } catch {
     return [];
   }
@@ -4434,7 +5168,7 @@ function loadHistory() {
 var HISTORY_LIMIT = 200;
 function trimHistoryFile() {
   try {
-    const lines = import_node_fs9.default.readFileSync(HISTORY, "utf8").split("\n").filter(Boolean);
+    const lines = import_node_fs11.default.readFileSync(HISTORY, "utf8").split("\n").filter(Boolean);
     if (lines.length <= HISTORY_LIMIT) return;
     writePrivate(HISTORY, `${lines.slice(-HISTORY_LIMIT).join("\n")}
 `);
@@ -4445,9 +5179,9 @@ function remember2(line) {
   try {
     const trimmed = redactLine(line.trim());
     if (!trimmed) return;
-    if (!import_node_fs9.default.existsSync(HISTORY)) writePrivate(HISTORY, "");
-    else import_node_fs9.default.chmodSync(HISTORY, 384);
-    import_node_fs9.default.appendFileSync(HISTORY, `${trimmed}
+    if (!import_node_fs11.default.existsSync(HISTORY)) writePrivate(HISTORY, "");
+    else import_node_fs11.default.chmodSync(HISTORY, 384);
+    import_node_fs11.default.appendFileSync(HISTORY, `${trimmed}
 `);
     trimHistoryFile();
   } catch {
@@ -4492,7 +5226,7 @@ function readOneLine(fd) {
   const buf = Buffer.alloc(1);
   try {
     for (; ; ) {
-      const n = import_node_fs9.default.readSync(fd, buf);
+      const n = import_node_fs11.default.readSync(fd, buf);
       if (n <= 0) break;
       const char = buf.toString("utf8", 0, n);
       text += char;
@@ -4783,10 +5517,14 @@ function main() {
     process.exit(result2.ok ? 0 : 1);
   }
   const cluster = boot();
+  if (rest[0] === "mcp") {
+    serveMcp(cluster);
+    return;
+  }
   if (rest.length === 0) {
     if (!process.stdin.isTTY) {
       let current = cluster;
-      const text = import_node_fs9.default.readFileSync(0, "utf8");
+      const text = import_node_fs11.default.readFileSync(0, "utf8");
       let code = 0;
       for (const line2 of text.split("\n")) {
         if (!line2.trim()) continue;

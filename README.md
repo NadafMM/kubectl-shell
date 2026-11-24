@@ -49,7 +49,7 @@ kube plan delete pod x  # name matching pods and Services that would lose Ready 
 kube ask "why is checkout crashing"
 ```
 
-**`ask`** maps questions to kubectl commands with local pattern rules; it makes no network or AI-model calls.
+**`ask`** reads a failing pod, its events, and previous logs through kubectl, and still maps other questions with local pattern rules. It makes no AI-model calls of its own.
 
 **Shell meta commands:** `live`, `reset`, `view` / `ui`, `plan`, `ask` / `?`, `help`, `exit`.
 
@@ -62,6 +62,10 @@ High-risk verbs (delete, writes, `port-forward`, `run`, `expose`, pod `exec`/`cp
 A policy file at `~/.kube-shell/policy.json` can mark a context `guarded` or `confirm: typed`, and can deny verbs. Inside the shell, `ctx` and `ns` change context and namespace for that shell only. Agents (`KUBE_SHELL_AGENT=1`) that require an approved plan use `kube plan --json`, then `kube --yes --plan-id <id>`. That id works once.
 
 `kube audit tail` prints recent redacted records from `~/.kube-shell/audit.jsonl`. `KUBE_SHELL_AUDIT=0` turns that file off unless the policy says `audit: required`.
+
+`kube mcp` speaks JSON-RPC on stdin for `kube_context`, `kube_plan`, and `kube_execute`. It reads only `~/.kube-shell/policy.json`. Secret and ConfigMap output is redacted in those responses. A delete needs a plan id from `kube_plan`.
+
+`kube undo` restores the previous saved object for a named `set`, `apply`, `patch`, `scale`, `label`, or `annotate`. It asks before it writes. Secrets, ConfigMaps, and Pods are refused.
 
 Agents: `kube plan --json …`, then `--yes` when the plan matches intent. `__complete --json` for completion without running the line.
 
