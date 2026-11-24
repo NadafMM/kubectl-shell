@@ -13,6 +13,7 @@ import { stateDir, writePrivate } from "./private";
 import { redactLine } from "./redact";
 import { liveCluster, probeLive } from "./live";
 import { serveMcp } from "./mcp";
+import { realSandbox, sandboxDown, sandboxKubeconfig, sandboxUp } from "./sandbox";
 import { openPromptInput, readSyncRetry } from "./tty";
 import { promptOf, type Cluster } from "../src/lib/kube/model";
 import { quoteArg } from "../src/lib/kube/parse";
@@ -94,6 +95,8 @@ Tab completes against the current cluster. kube exits if kubectl cannot reach it
   kube view                    full-screen pods, logs, and describe
   kube plan delete pod <name>  what it will change, before it runs
   kube ask "why is it crashing"
+  kube sandbox up|down|shell  local kind cluster, separate kubeconfig
+  kube --sandbox get pods      use that cluster
   kube plan --json get pods    same plan, for an agent
   kube --yes delete pod <name> skip the confirmation
 
@@ -357,6 +360,35 @@ function takeFlags(argv: string[]) {
   return parsed;
 }
 
+function prepareCommand(flags: { sandbox: boolean; rest: string[] }): string[] {
+  let rest = [...flags.rest];
+  if (rest[0] === "sandbox") {
+    const action = rest[1];
+    if (rest.length !== 2 || (action !== "up" && action !== "down" && action !== "shell")) {
+      process.stderr.write("usage: kube sandbox up|down|shell\n");
+      process.exit(1);
+    }
+    if (action === "up" || action === "down") {
+      const result = action === "up" ? sandboxUp(realSandbox()) : sandboxDown(realSandbox());
+      const text = result.message.endsWith("\n") ? result.message : `${result.message}\n`;
+      if (result.ok) process.stdout.write(text);
+      else process.stderr.write(text);
+      process.exit(result.ok ? 0 : 1);
+    }
+    rest = [];
+    flags.sandbox = true;
+  }
+  if (flags.sandbox) {
+    const config = sandboxKubeconfig();
+    if (!fs.existsSync(config)) {
+      process.stderr.write("kube sandbox is not up. Run kube sandbox up.\n");
+      process.exit(1);
+    }
+    process.env.KUBECONFIG = config;
+  }
+  return rest;
+}
+
 function blankCluster(): Cluster {
   return {
     current: "",
@@ -393,7 +425,8 @@ export function main() {
   }
 
   const flags = takeFlags(argv);
-  const { yes, rest } = flags;
+  const yes = flags.yes;
+  const rest = prepareCommand(flags);
   if (yes && !allowYes(yes, rest.length, process.stdin.isTTY === true)) {
     process.stderr.write("`--yes` applies to one command, not the shell.\n");
     process.exit(1);

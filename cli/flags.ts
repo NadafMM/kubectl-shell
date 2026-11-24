@@ -35,8 +35,7 @@ export function leadingFlags(argv: string[]): LeadingFlags {
     }
     if (arg === "--sandbox") {
       parsed.sandbox = true;
-      parsed.error = "kube: --sandbox is not available yet";
-      return parsed;
+      continue;
     }
     const eq = arg.indexOf("=");
     const name = eq === -1 ? arg : arg.slice(0, eq);

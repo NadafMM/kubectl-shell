@@ -426,6 +426,84 @@ test("ask about port-forward does not read pod logs", () => {
   );
 });
 
+test("--sandbox refuses to run before the practice cluster exists", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "kube-sandbox-missing-"));
+  const userConfig = path.join(home, ".kube", "config");
+  fs.mkdirSync(path.dirname(userConfig), { recursive: true });
+  fs.writeFileSync(userConfig, "original-kubeconfig");
+  const result = spawnKube(["--sandbox", "get", "pods"], {
+    KUBE_FAKE_FIXTURE: "up",
+    KUBE_TEST_HOME: home,
+    KUBECONFIG: userConfig,
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr ?? "", /kube sandbox is not up/);
+  assert.equal(result.lines.length, 0);
+  assert.equal(fs.readFileSync(userConfig, "utf8"), "original-kubeconfig");
+});
+
+test("sandbox up does not modify the user kubeconfig", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "kube-sandbox-up-"));
+  const userConfig = path.join(home, ".kube", "config");
+  fs.mkdirSync(path.dirname(userConfig), { recursive: true });
+  fs.writeFileSync(userConfig, "original-kubeconfig");
+  const kindLog = path.join(home, "kind.log");
+  const kind = path.join(root, "scripts", "fake-kind.mjs");
+  const result = spawnKube(["sandbox", "up"], {
+    KUBE_FAKE_FIXTURE: "up",
+    KUBE_TEST_HOME: home,
+    KUBECONFIG: userConfig,
+    KUBE_SHELL_KIND: kind,
+    KUBE_SHELL_DOCKER: "docker",
+    KUBE_FAKE_KIND_LOG: kindLog,
+  });
+  assert.equal(result.status, 0, result.stderr ?? "");
+  assert.equal(fs.readFileSync(userConfig, "utf8"), "original-kubeconfig");
+  const created = JSON.parse(fs.readFileSync(kindLog, "utf8").split("\n")[0] ?? "[]") as string[];
+  assert.deepEqual(created.slice(0, 4), ["create", "cluster", "--name", "kube-shell-sandbox"]);
+  const config = created[created.indexOf("--kubeconfig") + 1];
+  assert.equal(config, path.join(home, ".kube-shell", "sandbox", "kubeconfig"));
+  assert.equal(
+    result.lines.some((line) => {
+      const argv = JSON.parse(line) as string[];
+      return argv[0] === "apply" && argv.includes("-f");
+    }),
+    true,
+  );
+  const down = spawnKube(["sandbox", "down"], {
+    KUBE_FAKE_FIXTURE: "up",
+    KUBE_TEST_HOME: home,
+    KUBECONFIG: userConfig,
+    KUBE_SHELL_KIND: kind,
+    KUBE_SHELL_DOCKER: "docker",
+    KUBE_FAKE_KIND_LOG: kindLog,
+  });
+  assert.equal(down.status, 0, down.stderr ?? "");
+  assert.equal(fs.existsSync(config ?? ""), false);
+  assert.equal(fs.readFileSync(userConfig, "utf8"), "original-kubeconfig");
+});
+
+test("--sandbox plan delete uses the sandbox kubeconfig", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "kube-sandbox-use-"));
+  const userConfig = path.join(home, ".kube", "config");
+  fs.mkdirSync(path.dirname(userConfig), { recursive: true });
+  fs.writeFileSync(userConfig, "original-kubeconfig");
+  const sandboxConfig = path.join(home, ".kube-shell", "sandbox", "kubeconfig");
+  fs.mkdirSync(path.dirname(sandboxConfig), { recursive: true });
+  fs.writeFileSync(sandboxConfig, "apiVersion: v1\n");
+  const seen = path.join(home, "seen-kubeconfig");
+  const result = spawnKube(["--sandbox", "plan", "delete", "deploy/demo"], {
+    KUBE_FAKE_FIXTURE: "up",
+    KUBE_TEST_HOME: home,
+    KUBECONFIG: userConfig,
+    KUBE_FAKE_KUBECONFIG_OUT: seen,
+  });
+  assert.equal(result.status, 0, result.stderr ?? "");
+  assert.match(result.stdout ?? "", /demo/);
+  assert.equal(fs.readFileSync(seen, "utf8"), sandboxConfig);
+  assert.equal(fs.readFileSync(userConfig, "utf8"), "original-kubeconfig");
+});
+
 test("--version prints the package.json version", () => {
   const { version } = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")) as {
     version: string;

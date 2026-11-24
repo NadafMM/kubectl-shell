@@ -24,8 +24,8 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 
 // cli/main.ts
-var import_node_fs11 = __toESM(require("node:fs"), 1);
-var import_node_path9 = __toESM(require("node:path"), 1);
+var import_node_fs12 = __toESM(require("node:fs"), 1);
+var import_node_path10 = __toESM(require("node:path"), 1);
 var import_node_readline = __toESM(require("node:readline"), 1);
 
 // src/lib/kube/shell-meta.ts
@@ -1659,8 +1659,7 @@ function leadingFlags(argv) {
     }
     if (arg === "--sandbox") {
       parsed.sandbox = true;
-      parsed.error = "kube: --sandbox is not available yet";
-      return parsed;
+      continue;
     }
     const eq = arg.indexOf("=");
     const name = eq === -1 ? arg : arg.slice(0, eq);
@@ -3659,8 +3658,8 @@ function probeTarget(pod, kind) {
   if (!probe) return "probe";
   const http = obj(probe.httpGet);
   if (http) {
-    const path10 = str(http.path) || "/";
-    return `http://:${http.port ?? ""}${path10.startsWith("/") ? path10 : `/${path10}`}`;
+    const path11 = str(http.path) || "/";
+    return `http://:${http.port ?? ""}${path11.startsWith("/") ? path11 : `/${path11}`}`;
   }
   const tcp = obj(probe.tcpSocket);
   if (tcp) return `tcp:${tcp.port ?? ""}`;
@@ -5148,9 +5147,171 @@ function serveMcp(cluster) {
   }
 }
 
+// cli/sandbox.ts
+var import_node_child_process2 = require("node:child_process");
+var import_node_fs11 = __toESM(require("node:fs"), 1);
+var import_node_os2 = __toESM(require("node:os"), 1);
+var import_node_path9 = __toESM(require("node:path"), 1);
+var SANDBOX_CLUSTER = "kube-shell-sandbox";
+var SANDBOX_SEED = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo
+  namespace: default
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: demo
+  template:
+    metadata:
+      labels:
+        app: demo
+    spec:
+      containers:
+        - name: app
+          image: nginx:1.27
+          ports:
+            - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo
+  namespace: default
+spec:
+  selector:
+    app: demo
+  ports:
+    - port: 80
+      targetPort: 80
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: broken
+  namespace: default
+spec:
+  containers:
+    - name: app
+      image: kube-shell/missing:none
+`;
+function sandboxKubeconfig(home = import_node_os2.default.homedir()) {
+  return import_node_path9.default.join(home, ".kube-shell", "sandbox", "kubeconfig");
+}
+function childEnv(kubeconfig) {
+  return { ...process.env, KUBECONFIG: kubeconfig };
+}
+function kindCmd() {
+  return process.env.KUBE_SHELL_KIND || "kind";
+}
+function kubectlCmd() {
+  return process.env.KUBE_SHELL_KUBECTL || "kubectl";
+}
+function tighten(file, mode) {
+  try {
+    import_node_fs11.default.chmodSync(file, mode);
+  } catch {
+  }
+}
+function sandboxUp(host2) {
+  if (!host2.has("kind") || !host2.has("docker")) {
+    return { ok: false, message: "kube sandbox needs kind and Docker on PATH" };
+  }
+  const kubeconfig = sandboxKubeconfig(host2.home);
+  import_node_fs11.default.mkdirSync(import_node_path9.default.dirname(kubeconfig), { recursive: true, mode: 448 });
+  tighten(import_node_path9.default.dirname(kubeconfig), 448);
+  tighten(import_node_path9.default.dirname(import_node_path9.default.dirname(kubeconfig)), 448);
+  const created = host2.run({
+    cmd: kindCmd(),
+    args: ["create", "cluster", "--name", SANDBOX_CLUSTER, "--kubeconfig", kubeconfig],
+    env: childEnv(kubeconfig)
+  });
+  if (created.code !== 0) {
+    return {
+      ok: false,
+      message: (created.stderr || created.stdout || "kind create failed").trim()
+    };
+  }
+  tighten(kubeconfig, 384);
+  const applied = host2.run({
+    cmd: kubectlCmd(),
+    args: ["apply", "-f", "-"],
+    env: childEnv(kubeconfig),
+    input: SANDBOX_SEED
+  });
+  if (applied.code !== 0) {
+    const detail = (applied.stderr || applied.stdout || "kubectl apply failed").trim();
+    return {
+      ok: false,
+      message: `sandbox cluster was created, but the demo workload was not applied
+${detail}`
+    };
+  }
+  return { ok: true, message: `sandbox ${SANDBOX_CLUSTER} is up
+${kubeconfig}` };
+}
+function clusterGone(result) {
+  return /not found|no kind cluster|failed to find|unknown cluster/i.test(
+    `${result.stderr}
+${result.stdout}`
+  );
+}
+function sandboxDown(host2) {
+  const kubeconfig = sandboxKubeconfig(host2.home);
+  const deleted = host2.run({
+    cmd: kindCmd(),
+    args: ["delete", "cluster", "--name", SANDBOX_CLUSTER],
+    env: childEnv(kubeconfig)
+  });
+  if (deleted.code !== 0 && !clusterGone(deleted)) {
+    return {
+      ok: false,
+      message: (deleted.stderr || deleted.stdout || "kind delete failed").trim()
+    };
+  }
+  import_node_fs11.default.rmSync(kubeconfig, { force: true });
+  return { ok: true, message: `sandbox ${SANDBOX_CLUSTER} is down` };
+}
+function commandOnPath(name) {
+  if (name === "kind" && process.env.KUBE_SHELL_KIND) return true;
+  if (name === "docker" && process.env.KUBE_SHELL_DOCKER) return true;
+  const tool = process.platform === "win32" ? "where.exe" : "which";
+  const result = (0, import_node_child_process2.spawnSync)(tool, [name], { encoding: "utf8", windowsHide: true });
+  return result.status === 0;
+}
+function launch(command) {
+  const scripted = command.cmd.endsWith(".mjs") || command.cmd.endsWith(".cjs");
+  const cmd = scripted ? process.execPath : command.cmd;
+  const args = scripted ? [command.cmd, ...command.args] : [...command.args];
+  const nodeScript = process.env.KUBE_SHELL_NODE_SCRIPT;
+  const kubectlArgs2 = command.args[0] === "apply" && nodeScript && !scripted ? [nodeScript, ...args] : args;
+  try {
+    const stdout = (0, import_node_child_process2.execFileSync)(cmd, kubectlArgs2, {
+      encoding: "utf8",
+      env: command.env,
+      input: command.input,
+      maxBuffer: 8 * 1024 * 1024,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    return { code: 0, stdout, stderr: "" };
+  } catch (err) {
+    const failed = err;
+    const text = (value) => typeof value === "string" ? value : value ? value.toString("utf8") : "";
+    return {
+      code: typeof failed.status === "number" ? failed.status : 1,
+      stdout: text(failed.stdout),
+      stderr: text(failed.stderr)
+    };
+  }
+}
+function realSandbox(home = import_node_os2.default.homedir()) {
+  return { home, run: launch, has: commandOnPath };
+}
+
 // cli/main.ts
 var VERSION = true ? "0.5.1" : "0.0.0-dev";
-var HISTORY = import_node_path9.default.join(stateDir(), "history");
+var HISTORY = import_node_path10.default.join(stateDir(), "history");
 var session = {
   yes: false,
   agent: false,
@@ -5160,7 +5321,7 @@ var session = {
 };
 function loadHistory() {
   try {
-    return import_node_fs11.default.readFileSync(HISTORY, "utf8").split("\n").map((line) => line.trimEnd()).filter(Boolean).slice(-200).reverse();
+    return import_node_fs12.default.readFileSync(HISTORY, "utf8").split("\n").map((line) => line.trimEnd()).filter(Boolean).slice(-200).reverse();
   } catch {
     return [];
   }
@@ -5168,7 +5329,7 @@ function loadHistory() {
 var HISTORY_LIMIT = 200;
 function trimHistoryFile() {
   try {
-    const lines = import_node_fs11.default.readFileSync(HISTORY, "utf8").split("\n").filter(Boolean);
+    const lines = import_node_fs12.default.readFileSync(HISTORY, "utf8").split("\n").filter(Boolean);
     if (lines.length <= HISTORY_LIMIT) return;
     writePrivate(HISTORY, `${lines.slice(-HISTORY_LIMIT).join("\n")}
 `);
@@ -5179,9 +5340,9 @@ function remember2(line) {
   try {
     const trimmed = redactLine(line.trim());
     if (!trimmed) return;
-    if (!import_node_fs11.default.existsSync(HISTORY)) writePrivate(HISTORY, "");
-    else import_node_fs11.default.chmodSync(HISTORY, 384);
-    import_node_fs11.default.appendFileSync(HISTORY, `${trimmed}
+    if (!import_node_fs12.default.existsSync(HISTORY)) writePrivate(HISTORY, "");
+    else import_node_fs12.default.chmodSync(HISTORY, 384);
+    import_node_fs12.default.appendFileSync(HISTORY, `${trimmed}
 `);
     trimHistoryFile();
   } catch {
@@ -5197,6 +5358,8 @@ Tab completes against the current cluster. kube exits if kubectl cannot reach it
   kube view                    full-screen pods, logs, and describe
   kube plan delete pod <name>  what it will change, before it runs
   kube ask "why is it crashing"
+  kube sandbox up|down|shell  local kind cluster, separate kubeconfig
+  kube --sandbox get pods      use that cluster
   kube plan --json get pods    same plan, for an agent
   kube --yes delete pod <name> skip the confirmation
 
@@ -5226,7 +5389,7 @@ function readOneLine(fd) {
   const buf = Buffer.alloc(1);
   try {
     for (; ; ) {
-      const n = import_node_fs11.default.readSync(fd, buf);
+      const n = import_node_fs12.default.readSync(fd, buf);
       if (n <= 0) break;
       const char = buf.toString("utf8", 0, n);
       text += char;
@@ -5440,6 +5603,35 @@ function takeFlags(argv) {
   }
   return parsed;
 }
+function prepareCommand(flags) {
+  let rest = [...flags.rest];
+  if (rest[0] === "sandbox") {
+    const action = rest[1];
+    if (rest.length !== 2 || action !== "up" && action !== "down" && action !== "shell") {
+      process.stderr.write("usage: kube sandbox up|down|shell\n");
+      process.exit(1);
+    }
+    if (action === "up" || action === "down") {
+      const result = action === "up" ? sandboxUp(realSandbox()) : sandboxDown(realSandbox());
+      const text = result.message.endsWith("\n") ? result.message : `${result.message}
+`;
+      if (result.ok) process.stdout.write(text);
+      else process.stderr.write(text);
+      process.exit(result.ok ? 0 : 1);
+    }
+    rest = [];
+    flags.sandbox = true;
+  }
+  if (flags.sandbox) {
+    const config = sandboxKubeconfig();
+    if (!import_node_fs12.default.existsSync(config)) {
+      process.stderr.write("kube sandbox is not up. Run kube sandbox up.\n");
+      process.exit(1);
+    }
+    process.env.KUBECONFIG = config;
+  }
+  return rest;
+}
 function blankCluster() {
   return {
     current: "",
@@ -5474,7 +5666,8 @@ function main() {
     return;
   }
   const flags = takeFlags(argv);
-  const { yes, rest } = flags;
+  const yes = flags.yes;
+  const rest = prepareCommand(flags);
   if (yes && !allowYes(yes, rest.length, process.stdin.isTTY === true)) {
     process.stderr.write("`--yes` applies to one command, not the shell.\n");
     process.exit(1);
@@ -5524,7 +5717,7 @@ function main() {
   if (rest.length === 0) {
     if (!process.stdin.isTTY) {
       let current = cluster;
-      const text = import_node_fs11.default.readFileSync(0, "utf8");
+      const text = import_node_fs12.default.readFileSync(0, "utf8");
       let code = 0;
       for (const line2 of text.split("\n")) {
         if (!line2.trim()) continue;

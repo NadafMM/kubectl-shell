@@ -3,6 +3,9 @@ import fs from "node:fs";
 const args = process.argv.slice(2);
 const log = process.env.KUBE_FAKE_LOG;
 if (log) fs.appendFileSync(log, `${JSON.stringify(args)}\n`);
+if (process.env.KUBE_FAKE_KUBECONFIG_OUT) {
+  fs.writeFileSync(process.env.KUBE_FAKE_KUBECONFIG_OUT, process.env.KUBECONFIG || "");
+}
 
 if ((process.env.KUBE_FAKE_FIXTURE || "down") === "down") process.exit(1);
 

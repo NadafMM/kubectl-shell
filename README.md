@@ -67,6 +67,8 @@ A policy file at `~/.kube-shell/policy.json` can mark a context `guarded` or `co
 
 `kube undo` restores the previous saved object for a named `set`, `apply`, `patch`, `scale`, `label`, or `annotate`. It asks before it writes. Secrets, ConfigMaps, and Pods are refused.
 
+`kube sandbox up` starts a local kind cluster named `kube-shell-sandbox` and writes only `~/.kube-shell/sandbox/kubeconfig`. `kube --sandbox` and `kube sandbox shell` use that file. `kube sandbox down` deletes the cluster. `~/.kube/config` is not modified.
+
 Agents: `kube plan --json …`, then `--yes` when the plan matches intent. `__complete --json` for completion without running the line.
 
 ## Shell completion
