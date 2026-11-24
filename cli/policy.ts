@@ -17,6 +17,7 @@ export type AgentRule = {
 export type Policy = {
   contexts: { pattern: string; rule: ContextRule }[];
   agents: AgentRule | null;
+  audit: "required" | "optional";
 };
 
 const EMPTY_RULE: ContextRule = { mode: "normal", confirm: "default", deny: [] };
@@ -32,7 +33,9 @@ export function parsePolicy(text: string): Policy | { error: string } {
     return { error: "policy must be an object" };
   const doc = raw as Record<string, unknown>;
   for (const key of Object.keys(doc)) {
-    if (key !== "contexts" && key !== "agents") return { error: `unknown policy field ${key}` };
+    if (key !== "contexts" && key !== "agents" && key !== "audit") {
+      return { error: `unknown policy field ${key}` };
+    }
   }
   const contexts: Policy["contexts"] = [];
   if (doc.contexts !== undefined) {
@@ -51,7 +54,11 @@ export function parsePolicy(text: string): Policy | { error: string } {
     if ("error" in parsed) return parsed;
     agents = parsed;
   }
-  return { contexts, agents };
+  const audit = doc.audit === undefined ? "optional" : doc.audit;
+  if (audit !== "optional" && audit !== "required") {
+    return { error: "audit must be required or optional" };
+  }
+  return { contexts, agents, audit };
 }
 
 function contextRule(value: unknown): ContextRule | { error: string } {

@@ -308,6 +308,55 @@ test("ns in the shell does not rewrite kubeconfig", () => {
   assert.equal(got, true);
 });
 
+test("a denied command is audited without an exit code", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "kube-audit-deny-"));
+  writePolicy(home, { contexts: { "mini*": { deny: ["exec"] } } });
+  const result = spawnKube(["exec", "pod/api", "--", "date"], {
+    KUBE_FAKE_FIXTURE: "up",
+    KUBE_TEST_HOME: home,
+  });
+  assert.equal(result.status, 1);
+  assert.equal(logHasVerb(result.lines, "exec"), false);
+  const audit = fs.readFileSync(path.join(home, ".kube-shell", "audit.jsonl"), "utf8");
+  const row = JSON.parse(audit.trim().split("\n").at(-1) ?? "{}") as {
+    decision?: string;
+    exitCode?: number | null;
+  };
+  assert.equal(row.decision, "denied-policy");
+  assert.equal(row.exitCode, null);
+});
+
+test("an approved plan records its plan id and redacts literals", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "kube-audit-plan-"));
+  writePolicy(home, {
+    agents: { allow: ["get", "describe", "logs", "plan"], write_requires: "approved-plan" },
+  });
+  const env = { KUBE_FAKE_FIXTURE: "up", KUBE_TEST_HOME: home, KUBE_SHELL_AGENT: "1" };
+  const planned = spawnKube(
+    ["plan", "--json", "create", "secret", "generic", "t", "--from-literal=password=secret"],
+    env,
+  );
+  const planId = (JSON.parse(planned.stdout ?? "") as { planId?: string }).planId ?? "";
+  const ran = spawnKube(
+    [
+      "--yes",
+      "--plan-id",
+      planId,
+      "create",
+      "secret",
+      "generic",
+      "t",
+      "--from-literal=password=secret",
+    ],
+    env,
+  );
+  assert.equal(ran.status, 0);
+  const audit = fs.readFileSync(path.join(home, ".kube-shell", "audit.jsonl"), "utf8");
+  assert.doesNotMatch(audit, /password=secret/);
+  assert.match(audit, /password=\*\*\*/);
+  assert.match(audit, new RegExp(`"approver":"plan-id:${planId}"`));
+});
+
 test("an unknown leading flag is an error", () => {
   const result = spawnKube(["--nope", "get", "pods"], { KUBE_FAKE_FIXTURE: "down" });
   assert.equal(result.status, 1);

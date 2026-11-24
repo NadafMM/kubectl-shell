@@ -24,8 +24,8 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 
 // cli/main.ts
-var import_node_fs8 = __toESM(require("node:fs"), 1);
-var import_node_path7 = __toESM(require("node:path"), 1);
+var import_node_fs9 = __toESM(require("node:fs"), 1);
+var import_node_path8 = __toESM(require("node:path"), 1);
 var import_node_readline = __toESM(require("node:readline"), 1);
 
 // src/lib/kube/shell-meta.ts
@@ -37,6 +37,7 @@ var SHELL_COMMANDS = [
   { value: "ask", detail: "Turn a question into kubectl lines", weight: 90 },
   { value: "live", detail: "Reconnect to the cluster", weight: 86 },
   { value: "reset", detail: "Refresh names from the cluster", weight: 84 },
+  { value: "audit", detail: "Show recent redacted command records", weight: 70 },
   { value: "help", detail: "List shell commands", weight: 50 },
   { value: "clear", detail: "Clear the screen", weight: 40 },
   { value: "exit", detail: "Leave the shell", weight: 30, aliases: ["quit"] }
@@ -1731,7 +1732,9 @@ function parsePolicy(text) {
     return { error: "policy must be an object" };
   const doc = raw;
   for (const key of Object.keys(doc)) {
-    if (key !== "contexts" && key !== "agents") return { error: `unknown policy field ${key}` };
+    if (key !== "contexts" && key !== "agents" && key !== "audit") {
+      return { error: `unknown policy field ${key}` };
+    }
   }
   const contexts = [];
   if (doc.contexts !== void 0) {
@@ -1750,7 +1753,11 @@ function parsePolicy(text) {
     if ("error" in parsed) return parsed;
     agents = parsed;
   }
-  return { contexts, agents };
+  const audit = doc.audit === void 0 ? "optional" : doc.audit;
+  if (audit !== "optional" && audit !== "required") {
+    return { error: "audit must be required or optional" };
+  }
+  return { contexts, agents, audit };
 }
 function contextRule(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -3497,16 +3504,120 @@ function runLive(args, options = {}) {
   return result.status ?? 1;
 }
 
-// cli/plans.ts
+// cli/audit.ts
 var import_node_crypto = __toESM(require("node:crypto"), 1);
 var import_node_fs6 = __toESM(require("node:fs"), 1);
 var import_node_path6 = __toESM(require("node:path"), 1);
+
+// cli/redact.ts
+var PAIR_FLAGS = ["--from-literal", "--from-file"];
+var VALUE_FLAGS2 = ["--docker-password", "--password", "--token", "--client-secret"];
+var SENSITIVE_KEY = /^(password|token|secret|apikey|api-key|client-secret|client_secret)$/i;
+function hidePair(value) {
+  const eq = value.indexOf("=");
+  if (eq < 0) return "***";
+  return `${value.slice(0, eq)}=***`;
+}
+function matchFlag(token, flags) {
+  return flags.find((flag) => token === flag || token.startsWith(`${flag}=`));
+}
+function redactAssignment(token) {
+  const eq = token.indexOf("=");
+  if (eq < 0) return token;
+  const key = token.slice(0, eq);
+  if (SENSITIVE_KEY.test(key)) return `${key}=***`;
+  return token;
+}
+function redactLine(line) {
+  const tokens = line.split(" ");
+  const out = [];
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i] ?? "";
+    const pair = matchFlag(token, PAIR_FLAGS);
+    if (pair) {
+      if (token === pair) {
+        out.push(token);
+        const next = tokens[i + 1];
+        if (next !== void 0) {
+          out.push(hidePair(next));
+          i += 1;
+        }
+      } else {
+        out.push(`${pair}=${hidePair(token.slice(pair.length + 1))}`);
+      }
+      continue;
+    }
+    const valueFlag = matchFlag(token, VALUE_FLAGS2);
+    if (valueFlag) {
+      if (token === valueFlag) {
+        out.push(token);
+        if (tokens[i + 1] !== void 0) {
+          out.push("***");
+          i += 1;
+        }
+      } else {
+        out.push(`${valueFlag}=***`);
+      }
+      continue;
+    }
+    out.push(redactAssignment(token));
+  }
+  return out.join(" ");
+}
+
+// cli/audit.ts
+var MAX_BYTES = 5 * 1024 * 1024;
+function auditPath() {
+  return import_node_path6.default.join(stateDir(), "audit.jsonl");
+}
+function auditEnabled(policy, env = process.env) {
+  if (policy?.audit === "required") return true;
+  return env.KUBE_SHELL_AUDIT !== "0";
+}
+function redactArgv(argv) {
+  return redactLine(argv.join(" ")).split(" ");
+}
+function appendAudit(entry, maxBytes = MAX_BYTES) {
+  const file = auditPath();
+  const line = `${JSON.stringify(entry)}
+`;
+  try {
+    if (import_node_fs6.default.existsSync(file) && import_node_fs6.default.statSync(file).size >= maxBytes) {
+      const previous = `${file}.1`;
+      import_node_fs6.default.rmSync(previous, { force: true });
+      import_node_fs6.default.renameSync(file, previous);
+    }
+    if (!import_node_fs6.default.existsSync(file)) writePrivate(file, line);
+    else {
+      import_node_fs6.default.appendFileSync(file, line);
+      import_node_fs6.default.chmodSync(file, 384);
+    }
+  } catch {
+    return;
+  }
+  if (process.env.KUBE_SHELL_AUDIT_STDERR === "1") process.stderr.write(line);
+}
+function tailAudit(count = 20) {
+  const file = auditPath();
+  if (!import_node_fs6.default.existsSync(file)) return [];
+  const lines = import_node_fs6.default.readFileSync(file, "utf8").split("\n").filter(Boolean);
+  const n = Number.isFinite(count) && count > 0 ? Math.floor(count) : 20;
+  return lines.slice(-n);
+}
+function newAuditId() {
+  return import_node_crypto.default.randomBytes(8).toString("hex");
+}
+
+// cli/plans.ts
+var import_node_crypto2 = __toESM(require("node:crypto"), 1);
+var import_node_fs7 = __toESM(require("node:fs"), 1);
+var import_node_path7 = __toESM(require("node:path"), 1);
 var TTL_MS2 = 5 * 60 * 1e3;
 function planPath(id) {
-  return import_node_path6.default.join(stateDir(), "plans", `${id}.json`);
+  return import_node_path7.default.join(stateDir(), "plans", `${id}.json`);
 }
 function mintPlan(record, now = Date.now()) {
-  const planId = import_node_crypto.default.randomBytes(16).toString("hex");
+  const planId = import_node_crypto2.default.randomBytes(16).toString("hex");
   const stored = { planId, ...record, expires: now + TTL_MS2 };
   writePrivate(planPath(planId), JSON.stringify(stored));
   return planId;
@@ -3515,24 +3626,24 @@ function consumePlan(planId, expected, now = Date.now()) {
   const file = planPath(planId);
   let stored;
   try {
-    stored = JSON.parse(import_node_fs6.default.readFileSync(file, "utf8"));
+    stored = JSON.parse(import_node_fs7.default.readFileSync(file, "utf8"));
   } catch {
     return { ok: false, reason: "plan expired or unknown" };
   }
   if (!stored.expires || stored.expires <= now) {
-    import_node_fs6.default.rmSync(file, { force: true });
+    import_node_fs7.default.rmSync(file, { force: true });
     return { ok: false, reason: "plan expired or unknown" };
   }
   const same = stored.context === expected.context && stored.namespace === expected.namespace && JSON.stringify(stored.argv) === JSON.stringify(expected.argv);
   if (!same) return { ok: false, reason: "plan does not match this command" };
-  import_node_fs6.default.rmSync(file, { force: true });
+  import_node_fs7.default.rmSync(file, { force: true });
   return { ok: true };
 }
 
 // cli/tty.ts
-var import_node_fs7 = __toESM(require("node:fs"), 1);
+var import_node_fs8 = __toESM(require("node:fs"), 1);
 var RETRY = /* @__PURE__ */ new Set(["EAGAIN", "EWOULDBLOCK", "EINTR"]);
-function openPromptInput(platform = process.platform, open = (file) => import_node_fs7.default.openSync(file, "r")) {
+function openPromptInput(platform = process.platform, open = (file) => import_node_fs8.default.openSync(file, "r")) {
   const stdin = { fd: 0, close: () => {
   } };
   if (platform === "win32") return stdin;
@@ -3542,9 +3653,9 @@ function openPromptInput(platform = process.platform, open = (file) => import_no
   } catch {
     return stdin;
   }
-  return { fd, close: () => import_node_fs7.default.closeSync(fd) };
+  return { fd, close: () => import_node_fs8.default.closeSync(fd) };
 }
-function readSyncRetry(fd, buf, read = (f, b) => import_node_fs7.default.readSync(f, b, 0, b.length, null), sleep = sleepMs) {
+function readSyncRetry(fd, buf, read = (f, b) => import_node_fs8.default.readSync(f, b, 0, b.length, null), sleep = sleepMs) {
   for (; ; ) {
     try {
       return read(fd, buf);
@@ -3766,8 +3877,25 @@ function deleteEngineLine(row) {
   if (row.ns) parts.push("-n", row.ns);
   return parts.join(" ");
 }
-function runDelete(plan) {
-  const result = captureLive(kubectlArgs(plan.command));
+function runDelete(plan, yes) {
+  const started = Date.now();
+  const argv = kubectlArgs(plan.command);
+  const result = captureLive(argv);
+  if (auditEnabled(null)) {
+    appendAudit({
+      id: newAuditId(),
+      timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+      actor: process.stdin.isTTY ? "human-tty" : "human-cli",
+      context: plan.context,
+      namespace: plan.namespace,
+      argv: redactArgv(argv),
+      risk: plan.risk,
+      decision: "executed",
+      approver: yes ? "flag-yes" : "prompt-y",
+      exitCode: result.code,
+      durationMs: Date.now() - started
+    });
+  }
   return (result.stderr || result.stdout || "deleted").trim().split("\n")[0] ?? "deleted";
 }
 function boardFrom(word) {
@@ -4044,7 +4172,7 @@ function openView(clusterIn, options) {
           const planned = pendingDelete ?? (row ? planCommand(deleteEngineLine(row), cluster) : null);
           pendingDelete = null;
           if (planned) {
-            state = { ...state, message: runDelete(planned) };
+            state = { ...state, message: runDelete(planned, options.yes) };
             reload();
           }
         }
@@ -4131,6 +4259,17 @@ function runUserLine(line, cluster, host2, options = {}) {
     if (!script) return { output: "usage: kube completion bash|zsh|fish", ok: false, cluster };
     return { output: script, ok: true, cluster };
   }
+  if (meta === "audit") {
+    const parts = trimmed.split(/\s+/);
+    if (parts[1] && parts[1] !== "tail") {
+      return { output: "usage: kube audit tail [-n 20]", ok: false, cluster };
+    }
+    let count = 20;
+    const flag = parts.indexOf("-n");
+    if (flag >= 0) count = Number(parts[flag + 1]);
+    const lines = tailAudit(count);
+    return { output: lines.join("\n"), ok: true, cluster };
+  }
   if (meta === "ns" || meta === "ctx") {
     const name = trimmed.split(/\s+/).slice(1).join(" ").trim();
     if (!name) return { output: `usage: ${meta} <name>`, ok: false, cluster };
@@ -4198,17 +4337,38 @@ ${text}` : formatPlan(planned2),
   }
   const view = toEngine(trimmed, trimmed.length, "repl");
   const planned = planCommand(view.line, cluster);
+  const started = Date.now();
   const rule = ruleFor(host2.policy ?? null, cluster.current);
   const argv = commandArgs(view.line, cluster);
+  const actor = host2.agent ? "agent-cli" : process.stdin.isTTY ? "human-tty" : "human-cli";
+  const writeAudit = (decision, approver2, exitCode) => {
+    if (!auditEnabled(host2.policy ?? null)) return;
+    appendAudit({
+      id: newAuditId(),
+      timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+      actor,
+      context: planned.context,
+      namespace: planned.namespace,
+      argv: redactArgv(argv),
+      risk: planned.risk,
+      decision,
+      approver: approver2,
+      exitCode,
+      durationMs: Date.now() - started
+    });
+  };
   if (rule.deny.includes(planned.verb)) {
+    writeAudit("denied-policy", "none", null);
     return { output: `refused: ${planned.verb} is denied by policy`, ok: false, cluster };
   }
   if (host2.agent && host2.policy?.agents && planned.risk === "read" && !host2.policy.agents.allow.includes(planned.verb)) {
+    writeAudit("denied-policy", "none", null);
     return { output: `refused: ${planned.verb} is not allowed for agents`, ok: false, cluster };
   }
   const needsPlan = host2.agent === true && host2.policy?.agents?.writeRequires === "approved-plan" && planned.mutating;
   if (needsPlan) {
     if (!host2.planId) {
+      writeAudit("denied-policy", "none", null);
       return {
         output: "refused: agent writes need --plan-id from plan --json",
         ok: false,
@@ -4220,8 +4380,12 @@ ${text}` : formatPlan(planned2),
       namespace: planned.namespace,
       argv
     });
-    if (!consumed.ok) return { output: `refused: ${consumed.reason}`, ok: false, cluster };
+    if (!consumed.ok) {
+      writeAudit("denied-policy", "none", null);
+      return { output: `refused: ${consumed.reason}`, ok: false, cluster };
+    }
   } else if (rule.confirm === "typed" && host2.yes && host2.confirmContext !== cluster.current) {
+    writeAudit("refused-confirm", "none", null);
     return {
       output: `refused: pass --confirm-context ${cluster.current}`,
       ok: false,
@@ -4232,71 +4396,21 @@ ${text}` : formatPlan(planned2),
     process.stderr.write(`${formatPlan(planned)}${extra ? `
 ${extra}` : ""}
 `);
-    if (!host2.confirm("Run it? [y/N] ")) return { output: "not run", ok: false, cluster };
+    if (!host2.confirm("Run it? [y/N] ")) {
+      writeAudit("refused-confirm", "none", null);
+      return { output: "not run", ok: false, cluster };
+    }
   }
+  const approver = needsPlan ? `plan-id:${host2.planId}` : rule.confirm === "typed" && host2.yes ? "typed-context" : host2.yes ? "flag-yes" : "prompt-y";
   const code = runLive(argv, { inheritStdin: options.inheritStdin });
+  const dryRun2 = argv.some((token) => token === "--dry-run" || token.startsWith("--dry-run="));
+  writeAudit(dryRun2 ? "dry-run" : "executed", approver, code);
   return { output: "", ok: code === 0, cluster: applyLiveContext(cluster) };
-}
-
-// cli/redact.ts
-var PAIR_FLAGS = ["--from-literal", "--from-file"];
-var VALUE_FLAGS2 = ["--docker-password", "--password", "--token", "--client-secret"];
-var SENSITIVE_KEY = /^(password|token|secret|apikey|api-key|client-secret|client_secret)$/i;
-function hidePair(value) {
-  const eq = value.indexOf("=");
-  if (eq < 0) return "***";
-  return `${value.slice(0, eq)}=***`;
-}
-function matchFlag(token, flags) {
-  return flags.find((flag) => token === flag || token.startsWith(`${flag}=`));
-}
-function redactAssignment(token) {
-  const eq = token.indexOf("=");
-  if (eq < 0) return token;
-  const key = token.slice(0, eq);
-  if (SENSITIVE_KEY.test(key)) return `${key}=***`;
-  return token;
-}
-function redactLine(line) {
-  const tokens = line.split(" ");
-  const out = [];
-  for (let i = 0; i < tokens.length; i += 1) {
-    const token = tokens[i] ?? "";
-    const pair = matchFlag(token, PAIR_FLAGS);
-    if (pair) {
-      if (token === pair) {
-        out.push(token);
-        const next = tokens[i + 1];
-        if (next !== void 0) {
-          out.push(hidePair(next));
-          i += 1;
-        }
-      } else {
-        out.push(`${pair}=${hidePair(token.slice(pair.length + 1))}`);
-      }
-      continue;
-    }
-    const valueFlag = matchFlag(token, VALUE_FLAGS2);
-    if (valueFlag) {
-      if (token === valueFlag) {
-        out.push(token);
-        if (tokens[i + 1] !== void 0) {
-          out.push("***");
-          i += 1;
-        }
-      } else {
-        out.push(`${valueFlag}=***`);
-      }
-      continue;
-    }
-    out.push(redactAssignment(token));
-  }
-  return out.join(" ");
 }
 
 // cli/main.ts
 var VERSION = true ? "0.5.1" : "0.0.0-dev";
-var HISTORY = import_node_path7.default.join(stateDir(), "history");
+var HISTORY = import_node_path8.default.join(stateDir(), "history");
 var session = {
   yes: false,
   agent: false,
@@ -4306,7 +4420,7 @@ var session = {
 };
 function loadHistory() {
   try {
-    return import_node_fs8.default.readFileSync(HISTORY, "utf8").split("\n").map((line) => line.trimEnd()).filter(Boolean).slice(-200).reverse();
+    return import_node_fs9.default.readFileSync(HISTORY, "utf8").split("\n").map((line) => line.trimEnd()).filter(Boolean).slice(-200).reverse();
   } catch {
     return [];
   }
@@ -4314,7 +4428,7 @@ function loadHistory() {
 var HISTORY_LIMIT = 200;
 function trimHistoryFile() {
   try {
-    const lines = import_node_fs8.default.readFileSync(HISTORY, "utf8").split("\n").filter(Boolean);
+    const lines = import_node_fs9.default.readFileSync(HISTORY, "utf8").split("\n").filter(Boolean);
     if (lines.length <= HISTORY_LIMIT) return;
     writePrivate(HISTORY, `${lines.slice(-HISTORY_LIMIT).join("\n")}
 `);
@@ -4325,9 +4439,9 @@ function remember2(line) {
   try {
     const trimmed = redactLine(line.trim());
     if (!trimmed) return;
-    if (!import_node_fs8.default.existsSync(HISTORY)) writePrivate(HISTORY, "");
-    else import_node_fs8.default.chmodSync(HISTORY, 384);
-    import_node_fs8.default.appendFileSync(HISTORY, `${trimmed}
+    if (!import_node_fs9.default.existsSync(HISTORY)) writePrivate(HISTORY, "");
+    else import_node_fs9.default.chmodSync(HISTORY, 384);
+    import_node_fs9.default.appendFileSync(HISTORY, `${trimmed}
 `);
     trimHistoryFile();
   } catch {
@@ -4372,7 +4486,7 @@ function readOneLine(fd) {
   const buf = Buffer.alloc(1);
   try {
     for (; ; ) {
-      const n = import_node_fs8.default.readSync(fd, buf);
+      const n = import_node_fs9.default.readSync(fd, buf);
       if (n <= 0) break;
       const char = buf.toString("utf8", 0, n);
       text += char;
@@ -4666,7 +4780,7 @@ function main() {
   if (rest.length === 0) {
     if (!process.stdin.isTTY) {
       let current = cluster;
-      const text = import_node_fs8.default.readFileSync(0, "utf8");
+      const text = import_node_fs9.default.readFileSync(0, "utf8");
       let code = 0;
       for (const line2 of text.split("\n")) {
         if (!line2.trim()) continue;

@@ -1,5 +1,6 @@
 import type { Cluster, KObject } from "../src/lib/kube/model";
 import { namespaceOf } from "../src/lib/kube/model";
+import { appendAudit, auditEnabled, newAuditId, redactArgv } from "./audit";
 import { type Plan, planCommand } from "./insight";
 import { captureLive, kubectlArgs } from "./live";
 import { openPromptInput, readSyncRetry } from "./tty";
@@ -30,8 +31,25 @@ export function deleteEngineLine(row: Pick<Row, "kind" | "name" | "ns">): string
   return parts.join(" ");
 }
 
-function runDelete(plan: Plan): string {
-  const result = captureLive(kubectlArgs(plan.command));
+function runDelete(plan: Plan, yes: boolean): string {
+  const started = Date.now();
+  const argv = kubectlArgs(plan.command);
+  const result = captureLive(argv);
+  if (auditEnabled(null)) {
+    appendAudit({
+      id: newAuditId(),
+      timestamp: new Date().toISOString(),
+      actor: process.stdin.isTTY ? "human-tty" : "human-cli",
+      context: plan.context,
+      namespace: plan.namespace,
+      argv: redactArgv(argv),
+      risk: plan.risk,
+      decision: "executed",
+      approver: yes ? "flag-yes" : "prompt-y",
+      exitCode: result.code,
+      durationMs: Date.now() - started,
+    });
+  }
   return (result.stderr || result.stdout || "deleted").trim().split("\n")[0] ?? "deleted";
 }
 
@@ -357,7 +375,7 @@ export function openView(clusterIn: Cluster, options: ViewOptions): Cluster {
             pendingDelete ?? (row ? planCommand(deleteEngineLine(row), cluster) : null);
           pendingDelete = null;
           if (planned) {
-            state = { ...state, message: runDelete(planned) };
+            state = { ...state, message: runDelete(planned, options.yes) };
             reload();
           }
         }

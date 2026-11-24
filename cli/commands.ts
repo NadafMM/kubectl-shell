@@ -13,6 +13,15 @@ import {
   runJson,
   runLive,
 } from "./live";
+import {
+  appendAudit,
+  auditEnabled,
+  newAuditId,
+  redactArgv,
+  tailAudit,
+  type AuditApprover,
+  type AuditDecision,
+} from "./audit";
 import { consumePlan, mintPlan } from "./plans";
 import { ruleFor, type Policy } from "./policy";
 import { boardFrom, openView } from "./view";
@@ -120,6 +129,17 @@ export function runUserLine(
     if (!script) return { output: "usage: kube completion bash|zsh|fish", ok: false, cluster };
     return { output: script, ok: true, cluster };
   }
+  if (meta === "audit") {
+    const parts = trimmed.split(/\s+/);
+    if (parts[1] && parts[1] !== "tail") {
+      return { output: "usage: kube audit tail [-n 20]", ok: false, cluster };
+    }
+    let count = 20;
+    const flag = parts.indexOf("-n");
+    if (flag >= 0) count = Number(parts[flag + 1]);
+    const lines = tailAudit(count);
+    return { output: lines.join("\n"), ok: true, cluster };
+  }
   if (meta === "ns" || meta === "ctx") {
     const name = trimmed.split(/\s+/).slice(1).join(" ").trim();
     if (!name) return { output: `usage: ${meta} <name>`, ok: false, cluster };
@@ -193,9 +213,32 @@ export function runUserLine(
   }
   const view = toEngine(trimmed, trimmed.length, "repl");
   const planned = planCommand(view.line, cluster);
+  const started = Date.now();
   const rule = ruleFor(host.policy ?? null, cluster.current);
   const argv = commandArgs(view.line, cluster);
+  const actor = host.agent ? "agent-cli" : process.stdin.isTTY ? "human-tty" : "human-cli";
+  const writeAudit = (
+    decision: AuditDecision,
+    approver: AuditApprover,
+    exitCode: number | null,
+  ) => {
+    if (!auditEnabled(host.policy ?? null)) return;
+    appendAudit({
+      id: newAuditId(),
+      timestamp: new Date().toISOString(),
+      actor,
+      context: planned.context,
+      namespace: planned.namespace,
+      argv: redactArgv(argv),
+      risk: planned.risk,
+      decision,
+      approver,
+      exitCode,
+      durationMs: Date.now() - started,
+    });
+  };
   if (rule.deny.includes(planned.verb)) {
+    writeAudit("denied-policy", "none", null);
     return { output: `refused: ${planned.verb} is denied by policy`, ok: false, cluster };
   }
   if (
@@ -204,6 +247,7 @@ export function runUserLine(
     planned.risk === "read" &&
     !host.policy.agents.allow.includes(planned.verb)
   ) {
+    writeAudit("denied-policy", "none", null);
     return { output: `refused: ${planned.verb} is not allowed for agents`, ok: false, cluster };
   }
   const needsPlan =
@@ -212,6 +256,7 @@ export function runUserLine(
     planned.mutating;
   if (needsPlan) {
     if (!host.planId) {
+      writeAudit("denied-policy", "none", null);
       return {
         output: "refused: agent writes need --plan-id from plan --json",
         ok: false,
@@ -223,8 +268,12 @@ export function runUserLine(
       namespace: planned.namespace,
       argv,
     });
-    if (!consumed.ok) return { output: `refused: ${consumed.reason}`, ok: false, cluster };
+    if (!consumed.ok) {
+      writeAudit("denied-policy", "none", null);
+      return { output: `refused: ${consumed.reason}`, ok: false, cluster };
+    }
   } else if (rule.confirm === "typed" && host.yes && host.confirmContext !== cluster.current) {
+    writeAudit("refused-confirm", "none", null);
     return {
       output: `refused: pass --confirm-context ${cluster.current}`,
       ok: false,
@@ -236,8 +285,20 @@ export function runUserLine(
   ) {
     const extra = wantsBlast(planned) ? formatBlast(liveBlast(planned, view.line, cluster)) : "";
     process.stderr.write(`${formatPlan(planned)}${extra ? `\n${extra}` : ""}\n`);
-    if (!host.confirm("Run it? [y/N] ")) return { output: "not run", ok: false, cluster };
+    if (!host.confirm("Run it? [y/N] ")) {
+      writeAudit("refused-confirm", "none", null);
+      return { output: "not run", ok: false, cluster };
+    }
   }
+  const approver: AuditApprover = needsPlan
+    ? `plan-id:${host.planId}`
+    : rule.confirm === "typed" && host.yes
+      ? "typed-context"
+      : host.yes
+        ? "flag-yes"
+        : "prompt-y";
   const code = runLive(argv, { inheritStdin: options.inheritStdin });
+  const dryRun = argv.some((token) => token === "--dry-run" || token.startsWith("--dry-run="));
+  writeAudit(dryRun ? "dry-run" : "executed", approver, code);
   return { output: "", ok: code === 0, cluster: applyLiveContext(cluster) };
 }
