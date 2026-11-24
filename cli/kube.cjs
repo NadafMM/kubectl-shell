@@ -4190,14 +4190,16 @@ function openView(clusterIn, options) {
 function wantsBlast(plan) {
   return plan.verb === "delete" || plan.verb === "drain" || plan.verb === "scale" && plan.risk === "high";
 }
+var sessionScope = /* @__PURE__ */ new WeakMap();
 function commandArgs(engineLine, cluster) {
   const args = [...kubectlArgs(engineLine)];
+  const scope = sessionScope.get(cluster);
   const hasNs = args.some(
     (token) => token === "-n" || token === "--namespace" || token.startsWith("--namespace=") || token.startsWith("-n=")
   );
   const hasCtx = args.some((token) => token === "--context" || token.startsWith("--context="));
-  if (!hasNs) args.push("-n", namespaceOf(cluster) || "default");
-  if (!hasCtx && cluster.current) args.push("--context", cluster.current);
+  if (scope?.namespace && !hasNs) args.push("-n", scope.namespace);
+  if (scope?.context && !hasCtx) args.push("--context", scope.context);
   return args;
 }
 function liveBlast(plan, engineLine, cluster) {
@@ -4211,16 +4213,20 @@ function liveBlast(plan, engineLine, cluster) {
   return blastRadius(plan, commandArgs(engineLine, cluster), getJson, { now });
 }
 function useNamespace(cluster, namespace) {
-  return {
+  const next = {
     ...cluster,
     contexts: cluster.contexts.map(
       (item) => item.name === cluster.current ? { ...item, namespace } : item
     )
   };
+  sessionScope.set(next, { ...sessionScope.get(cluster), namespace });
+  return next;
 }
 function useContext(cluster, name) {
   if (!cluster.contexts.some((item) => item.name === name)) return null;
-  return { ...cluster, current: name };
+  const next = { ...cluster, current: name };
+  sessionScope.set(next, { ...sessionScope.get(cluster), context: name });
+  return next;
 }
 function runUserLine(line, cluster, host2, options = {}) {
   let trimmed = line.trim();

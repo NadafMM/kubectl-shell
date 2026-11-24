@@ -1,5 +1,5 @@
 import { metaOf } from "../src/lib/kube/shell-meta";
-import { namespaceOf, type Cluster } from "../src/lib/kube/model";
+import type { Cluster } from "../src/lib/kube/model";
 import { completionScript } from "./completion";
 import { toEngine } from "./engine";
 import { BLAST_BUDGET_MS, blastRadius, formatBlast, type GetJson } from "./blast";
@@ -34,8 +34,11 @@ function wantsBlast(plan: Plan): boolean {
   );
 }
 
+const sessionScope = new WeakMap<Cluster, { namespace?: string; context?: string }>();
+
 function commandArgs(engineLine: string, cluster: Cluster): string[] {
   const args = [...kubectlArgs(engineLine)];
+  const scope = sessionScope.get(cluster);
   const hasNs = args.some(
     (token) =>
       token === "-n" ||
@@ -44,8 +47,8 @@ function commandArgs(engineLine: string, cluster: Cluster): string[] {
       token.startsWith("-n="),
   );
   const hasCtx = args.some((token) => token === "--context" || token.startsWith("--context="));
-  if (!hasNs) args.push("-n", namespaceOf(cluster) || "default");
-  if (!hasCtx && cluster.current) args.push("--context", cluster.current);
+  if (scope?.namespace && !hasNs) args.push("-n", scope.namespace);
+  if (scope?.context && !hasCtx) args.push("--context", scope.context);
   return args;
 }
 
@@ -61,17 +64,21 @@ function liveBlast(plan: Plan, engineLine: string, cluster: Cluster) {
 }
 
 function useNamespace(cluster: Cluster, namespace: string): Cluster {
-  return {
+  const next = {
     ...cluster,
     contexts: cluster.contexts.map((item) =>
       item.name === cluster.current ? { ...item, namespace } : item,
     ),
   };
+  sessionScope.set(next, { ...sessionScope.get(cluster), namespace });
+  return next;
 }
 
 function useContext(cluster: Cluster, name: string): Cluster | null {
   if (!cluster.contexts.some((item) => item.name === name)) return null;
-  return { ...cluster, current: name };
+  const next = { ...cluster, current: name };
+  sessionScope.set(next, { ...sessionScope.get(cluster), context: name });
+  return next;
 }
 
 export type LineResult = { output: string; ok: boolean; cluster: Cluster; exit?: boolean };
