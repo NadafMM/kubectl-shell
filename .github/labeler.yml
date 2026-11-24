@@ -1,0 +1,17 @@
+javascript:
+  - changed-files:
+      - any-glob-to-any-file:
+          - cli/**
+          - src/**
+          - scripts/**
+
+github_actions:
+  - changed-files:
+      - any-glob-to-any-file: .github/**
+
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - README.md
+          - docs/**
+          - "*.md"

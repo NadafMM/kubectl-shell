@@ -1,0 +1,27 @@
+name: e2e-minikube
+
+# Optional manual smoke against minikube (slow). Kind is the default e2e on every PR.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  minikube:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - uses: medyagh/setup-minikube@v0.0.21
+        with:
+          minikube-version: v1.34.0
+          kubernetes-version: v1.31.0
+      - run: npm ci
+      - run: npm run build
+      - run: kubectl cluster-info
+      - run: npm run e2e:kind

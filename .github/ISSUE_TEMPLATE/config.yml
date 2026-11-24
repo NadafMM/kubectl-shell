@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or discussion
+    url: https://github.com/NadafMM/kubectl-shell/discussions
+    about: Ask before a large change or for usage help
