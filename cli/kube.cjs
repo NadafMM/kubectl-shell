@@ -24,17 +24,20 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 
 // cli/main.ts
-var import_node_fs5 = __toESM(require("node:fs"), 1);
-var import_node_path4 = __toESM(require("node:path"), 1);
+var import_node_fs9 = __toESM(require("node:fs"), 1);
+var import_node_path8 = __toESM(require("node:path"), 1);
 var import_node_readline = __toESM(require("node:readline"), 1);
 
 // src/lib/kube/shell-meta.ts
 var SHELL_COMMANDS = [
   { value: "view", detail: "Full-screen resource list", weight: 98, aliases: ["ui"] },
+  { value: "ctx", detail: "Switch context for this shell only", weight: 97 },
+  { value: "ns", detail: "Switch namespace for this shell only", weight: 96 },
   { value: "plan", detail: "What a command will change", weight: 92 },
   { value: "ask", detail: "Turn a question into kubectl lines", weight: 90 },
   { value: "live", detail: "Reconnect to the cluster", weight: 86 },
   { value: "reset", detail: "Refresh names from the cluster", weight: 84 },
+  { value: "audit", detail: "Show recent redacted command records", weight: 70 },
   { value: "help", detail: "List shell commands", weight: 50 },
   { value: "clear", detail: "Clear the screen", weight: 40 },
   { value: "exit", detail: "Leave the shell", weight: 30, aliases: ["quit"] }
@@ -1630,6 +1633,194 @@ kube: could not read the answer (${err.code ?? err.message}); not running it.
   return readAnswer(chunks);
 }
 
+// cli/flags.ts
+var VALUE_FLAGS = /* @__PURE__ */ new Set(["--policy", "--plan-id", "--confirm-context", "--record"]);
+function leadingFlags(argv) {
+  const parsed = { yes: false, sandbox: false, sample: false, rest: [] };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (parsed.rest.length > 0) {
+      parsed.rest.push(arg);
+      continue;
+    }
+    if (arg === "--live") continue;
+    if (arg === "--help" || arg === "-h" || arg === "--version" || arg === "-v") {
+      parsed.rest.push(arg);
+      continue;
+    }
+    if (arg === "--sample") {
+      parsed.sample = true;
+      continue;
+    }
+    if (arg === "--yes" || arg === "-y") {
+      parsed.yes = true;
+      continue;
+    }
+    if (arg === "--sandbox") {
+      parsed.sandbox = true;
+      parsed.error = "kube: --sandbox is not available yet";
+      return parsed;
+    }
+    const eq = arg.indexOf("=");
+    const name = eq === -1 ? arg : arg.slice(0, eq);
+    if (VALUE_FLAGS.has(name)) {
+      const value = eq === -1 ? argv[i + 1] : arg.slice(eq + 1);
+      if (!value || eq === -1 && value.startsWith("-")) {
+        parsed.error = `kube: ${name} needs a value`;
+        return parsed;
+      }
+      if (eq === -1) i += 1;
+      if (name === "--policy") parsed.policy = value;
+      else if (name === "--plan-id") parsed.planId = value;
+      else if (name === "--confirm-context") parsed.confirmContext = value;
+      else parsed.record = value;
+      if (name === "--record") {
+        parsed.error = "kube: --record is not available yet";
+        return parsed;
+      }
+      continue;
+    }
+    if (arg.startsWith("-")) {
+      parsed.error = `unknown flag ${arg}; flags after the command belong to kubectl`;
+      return parsed;
+    }
+    parsed.rest.push(arg);
+  }
+  return parsed;
+}
+
+// cli/policy.ts
+var import_node_fs3 = __toESM(require("node:fs"), 1);
+var import_node_path3 = __toESM(require("node:path"), 1);
+
+// cli/private.ts
+var import_node_fs2 = __toESM(require("node:fs"), 1);
+var import_node_os = __toESM(require("node:os"), 1);
+var import_node_path2 = __toESM(require("node:path"), 1);
+function stateDir() {
+  return import_node_path2.default.join(import_node_os.default.homedir(), ".kube-shell");
+}
+function writePrivate(file, data) {
+  const dir = import_node_path2.default.dirname(file);
+  import_node_fs2.default.mkdirSync(dir, { recursive: true, mode: 448 });
+  import_node_fs2.default.chmodSync(dir, 448);
+  const tmp = `${file}.${process.pid}.tmp`;
+  import_node_fs2.default.writeFileSync(tmp, data, { mode: 384 });
+  import_node_fs2.default.chmodSync(tmp, 384);
+  import_node_fs2.default.renameSync(tmp, file);
+  import_node_fs2.default.chmodSync(file, 384);
+}
+function tryWritePrivate(file, data) {
+  try {
+    writePrivate(file, data);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// cli/policy.ts
+var EMPTY_RULE = { mode: "normal", confirm: "default", deny: [] };
+function parsePolicy(text) {
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return { error: "policy is not valid JSON" };
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw))
+    return { error: "policy must be an object" };
+  const doc = raw;
+  for (const key of Object.keys(doc)) {
+    if (key !== "contexts" && key !== "agents" && key !== "audit") {
+      return { error: `unknown policy field ${key}` };
+    }
+  }
+  const contexts = [];
+  if (doc.contexts !== void 0) {
+    if (!doc.contexts || typeof doc.contexts !== "object" || Array.isArray(doc.contexts)) {
+      return { error: "contexts must be an object" };
+    }
+    for (const [pattern, value] of Object.entries(doc.contexts)) {
+      const rule = contextRule(value);
+      if ("error" in rule) return rule;
+      contexts.push({ pattern, rule });
+    }
+  }
+  let agents = null;
+  if (doc.agents !== void 0) {
+    const parsed = agentRule(doc.agents);
+    if ("error" in parsed) return parsed;
+    agents = parsed;
+  }
+  const audit = doc.audit === void 0 ? "optional" : doc.audit;
+  if (audit !== "optional" && audit !== "required") {
+    return { error: "audit must be required or optional" };
+  }
+  return { contexts, agents, audit };
+}
+function contextRule(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { error: "a context rule must be an object" };
+  }
+  const doc = value;
+  for (const key of Object.keys(doc)) {
+    if (key !== "mode" && key !== "confirm" && key !== "deny") {
+      return { error: `unknown context field ${key}` };
+    }
+  }
+  const mode = doc.mode === void 0 ? "normal" : doc.mode;
+  if (mode !== "normal" && mode !== "guarded") return { error: "mode must be normal or guarded" };
+  const confirm2 = doc.confirm === void 0 ? "default" : doc.confirm;
+  if (confirm2 !== "default" && confirm2 !== "typed") return { error: "confirm must be typed" };
+  const deny = doc.deny === void 0 ? [] : doc.deny;
+  if (!Array.isArray(deny) || deny.some((item) => typeof item !== "string")) {
+    return { error: "deny must be a list of verbs" };
+  }
+  return { mode, confirm: confirm2, deny };
+}
+function agentRule(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { error: "agents must be an object" };
+  }
+  const doc = value;
+  for (const key of Object.keys(doc)) {
+    if (key !== "allow" && key !== "write_requires" && key !== "match_non_tty") {
+      return { error: `unknown agents field ${key}` };
+    }
+  }
+  const allow = doc.allow === void 0 ? [] : doc.allow;
+  if (!Array.isArray(allow) || allow.some((item) => typeof item !== "string")) {
+    return { error: "agents.allow must be a list of verbs" };
+  }
+  const writeRequires = doc.write_requires === void 0 ? "none" : doc.write_requires;
+  if (writeRequires !== "none" && writeRequires !== "approved-plan") {
+    return { error: "write_requires must be approved-plan" };
+  }
+  const matchNonTty = doc.match_non_tty === void 0 ? false : doc.match_non_tty;
+  if (typeof matchNonTty !== "boolean") return { error: "match_non_tty must be true or false" };
+  return { allow, writeRequires, matchNonTty };
+}
+function ruleFor(policy, context) {
+  if (!policy) return EMPTY_RULE;
+  const exact = policy.contexts.find((item) => item.pattern === context);
+  if (exact) return exact.rule;
+  const wild = policy.contexts.filter((item) => item.pattern.endsWith("*") && context.startsWith(item.pattern.slice(0, -1))).sort((a, b) => b.pattern.length - a.pattern.length);
+  return wild[0]?.rule ?? EMPTY_RULE;
+}
+function policyFile(options) {
+  if (options.agent) return import_node_path3.default.join(stateDir(), "policy.json");
+  return options.flag || options.envPath || import_node_path3.default.join(stateDir(), "policy.json");
+}
+function readPolicy(file) {
+  if (!import_node_fs3.default.existsSync(file)) return null;
+  return parsePolicy(import_node_fs3.default.readFileSync(file, "utf8"));
+}
+function promptLabel(guarded, body) {
+  if (!guarded) return body;
+  return `[GUARDED] ${body}`;
+}
+
 // cli/engine.ts
 function toEngine(line, cursor, mode) {
   const c = Math.max(0, Math.min(cursor, line.length));
@@ -1766,6 +1957,708 @@ complete -c kube -f -a '(__kube_complete)'
 `;
   }
   return "";
+}
+
+// cli/manifest.ts
+var import_node_fs4 = __toESM(require("node:fs"), 1);
+var import_node_path4 = __toESM(require("node:path"), 1);
+function manifestRefs(file) {
+  let stat;
+  try {
+    stat = import_node_fs4.default.statSync(file);
+  } catch (error) {
+    const err = error;
+    return { ok: false, error: err.code ?? err.message };
+  }
+  if (stat.isDirectory()) {
+    const refs = [];
+    for (const name of import_node_fs4.default.readdirSync(file)) {
+      if (!/\.(ya?ml|json)$/i.test(name)) continue;
+      const nested = manifestRefs(import_node_path4.default.join(file, name));
+      if (!nested.ok) return nested;
+      refs.push(...nested.refs);
+    }
+    return { ok: true, refs };
+  }
+  try {
+    return { ok: true, refs: parseManifest(import_node_fs4.default.readFileSync(file, "utf8")) };
+  } catch (error) {
+    const err = error;
+    return { ok: false, error: err.code ?? err.message };
+  }
+}
+function parseManifest(text) {
+  const trimmed = text.trim();
+  if (!trimmed) return [];
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      return jsonRefs(JSON.parse(trimmed));
+    } catch {
+      return [];
+    }
+  }
+  const refs = [];
+  for (const doc of trimmed.split(/\r?\n---\r?\n/)) {
+    const ref = yamlRef(doc);
+    if (ref) refs.push(ref);
+  }
+  return refs;
+}
+function jsonRefs(value) {
+  if (Array.isArray(value)) return value.flatMap(jsonRefs);
+  if (!value || typeof value !== "object") return [];
+  const doc = value;
+  if (Array.isArray(doc.items)) return jsonRefs(doc.items);
+  if (!doc.kind || !doc.metadata?.name) return [];
+  return [{ kind: doc.kind, name: doc.metadata.name, namespace: doc.metadata.namespace }];
+}
+function yamlRef(doc) {
+  let kind = "";
+  let name = "";
+  let namespace;
+  let inMeta = false;
+  let metaIndent = 0;
+  for (const raw of doc.split(/\r?\n/)) {
+    if (!raw.trim() || raw.trimStart().startsWith("#")) continue;
+    const indent = raw.length - raw.trimStart().length;
+    const line = raw.trim();
+    if (inMeta && indent <= metaIndent) inMeta = false;
+    const match = /^([A-Za-z0-9_]+):\s*(.*)$/.exec(line);
+    if (!match) continue;
+    const key = match[1];
+    const value = strip(match[2] ?? "");
+    if (!inMeta && indent === 0 && key === "kind" && value) kind = value;
+    if (!inMeta && indent === 0 && key === "metadata") {
+      inMeta = true;
+      metaIndent = indent;
+      continue;
+    }
+    if (inMeta && indent > metaIndent) {
+      if (key === "name" && value && !name) name = value;
+      if (key === "namespace" && value && namespace === void 0) namespace = value;
+    }
+  }
+  if (!kind || !name) return null;
+  return { kind, name, namespace };
+}
+function strip(value) {
+  const cut = value.split(/\s+#/)[0]?.trim() ?? "";
+  if (cut.length >= 2 && (cut.startsWith('"') && cut.endsWith('"') || cut.startsWith("'") && cut.endsWith("'"))) {
+    return cut.slice(1, -1);
+  }
+  return cut;
+}
+
+// cli/blast.ts
+var BLAST_BUDGET_MS = 3e3;
+var subjects = /* @__PURE__ */ new WeakMap();
+function skipped(reason) {
+  return { status: "skipped", reason, objects: [], objectCount: 0, services: [] };
+}
+function unknown(reason) {
+  return { status: "unknown", reason, objects: [], objectCount: 0, services: [] };
+}
+function noun(kind, count) {
+  return count === 1 ? kind : `${kind}s`;
+}
+function orderAndCap(objects) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const object of objects) {
+    const key = `${object.namespace}\0${object.kind}`;
+    const group = counts.get(key) ?? { namespace: object.namespace, kind: object.kind, count: 0 };
+    group.count += 1;
+    counts.set(key, group);
+  }
+  const ordered = objects.map((object, index) => ({ object, index }));
+  ordered.sort((a, b) => a.object.namespace.localeCompare(b.object.namespace) || a.index - b.index);
+  const groups = [...counts.values()].sort(
+    (a, b) => a.namespace.localeCompare(b.namespace) || a.kind.localeCompare(b.kind)
+  );
+  return { shown: ordered.slice(0, 20).map((item) => item.object), groups };
+}
+function pack(objects, partial, extra = {}) {
+  const { shown, groups } = orderAndCap(objects);
+  return remember(
+    { status: "ok", objects: shown, objectCount: objects.length, services: [], ...extra },
+    { ...partial, groups }
+  );
+}
+function formatOk(blast) {
+  const lines = ["blast"];
+  const subject = subjects.get(blast);
+  const groups = subject?.groups ?? [];
+  if (blast.objectCount === 0 || groups.length === 0) {
+    const kind = subject?.kind ?? "object";
+    const ns = subject?.namespace ?? "default";
+    lines.push(`  0 ${noun(kind, 0)} in namespace ${ns}${fromSuffix(blast, ns, kind)}`);
+  } else {
+    for (const group of groups) {
+      lines.push(
+        `  ${group.count} ${noun(group.kind, group.count)} in namespace ${group.namespace}${fromSuffix(blast, group.namespace, group.kind)}`
+      );
+    }
+    for (const object of blast.objects) lines.push(objectLine(blast, object));
+    if (blast.objectCount > 20) lines.push(`  and ${blast.objectCount - 20} more`);
+  }
+  const multi = new Set(groups.map((group) => group.namespace)).size > 1;
+  for (const service of blast.services) lines.push(serviceLine(blast, service, multi));
+  if (blast.serviceNote) lines.push(`  ${blast.serviceNote}`);
+  for (const pdb of blast.pdbs ?? []) {
+    const word = pdb.disruptionsAllowed === 1 ? "disruption" : "disruptions";
+    lines.push(`  pdb/${pdb.name} allows ${pdb.disruptionsAllowed} ${word}`);
+  }
+  if (blast.pdbNote) lines.push(`  ${blast.pdbNote}`);
+  for (const hpa of blast.hpas ?? []) {
+    lines.push(
+      `  hpa/${hpa.name} keeps ${hpa.target} between ${hpa.minReplicas} and ${hpa.maxReplicas}`
+    );
+  }
+  if (blast.dryRun?.status === "ok") lines.push(`  dry-run: ${blast.dryRun.count ?? 0} objects`);
+  if (blast.dryRun?.status === "unknown") {
+    lines.push(`  dry-run: unknown (${blast.dryRun.reason ?? "failed"})`);
+  }
+  return lines.join("\n");
+}
+function objectLine(blast, object) {
+  const owner = blast.owners?.find(
+    (item) => item.pod === object.name && item.namespace === object.namespace
+  );
+  const owned = owner ? ` owned by ${owner.kind}/${owner.name}` : "";
+  return `  ${object.kind}/${object.name}${owned}`;
+}
+function fromSuffix(blast, namespace, kind) {
+  if (kind !== "pod" || !blast.controllers?.length) return "";
+  const names = blast.controllers.filter((item) => item.namespace === namespace).map((item) => `${item.kind}/${item.name}`);
+  return names.length > 0 ? `, from ${names.join(", ")}` : "";
+}
+function deletedPodsIn(blast, namespace) {
+  const groups = subjects.get(blast)?.groups;
+  if (groups) {
+    return groups.filter((group) => group.namespace === namespace && group.kind === "pod").reduce((sum, group) => sum + group.count, 0);
+  }
+  return blast.objects.filter((object) => object.kind === "pod" && object.namespace === namespace).length;
+}
+function serviceLine(blast, service, multi) {
+  const where = multi ? ` in namespace ${service.namespace}` : "";
+  const deleted = deletedPodsIn(blast, service.namespace);
+  const matched = service.matchedPods === deleted && deleted > 1 ? `matches all ${service.matchedPods}` : `matches ${service.matchedPods}`;
+  const ready = service.readyPodsRemaining === 0 ? "would have 0 ready pods" : `would keep ${service.readyPodsRemaining} ready pod${service.readyPodsRemaining === 1 ? "" : "s"}`;
+  return `  service/${service.name}${where} ${matched} and ${ready}`;
+}
+function formatBlast(blast) {
+  if (blast.status === "skipped" && blast.reason === "not a delete") return "";
+  if (blast.status === "skipped" && blast.reason === "no name or selector") {
+    return "blast: not expanded (no name or selector)";
+  }
+  if (blast.status === "skipped") return `blast: skipped (${blast.reason ?? ""})`;
+  if (blast.status === "unknown") return `blast: unknown (${blast.reason ?? ""})`;
+  return formatOk(blast);
+}
+function itemsOf(json, expectedKind) {
+  if (!json || typeof json !== "object") return null;
+  const doc = json;
+  if (expectedKind && doc.kind === expectedKind && doc.metadata?.name) return [doc];
+  if (!expectedKind && doc.kind && doc.metadata?.name) return [doc];
+  if (typeof doc.kind !== "string" || doc.kind !== "List" && !doc.kind.endsWith("List")) {
+    return null;
+  }
+  if (!Array.isArray(doc.items)) return null;
+  const items = [];
+  for (const item of doc.items) {
+    if (!item || typeof item !== "object") return null;
+    const object = item;
+    if (!object.metadata?.name) return null;
+    if (expectedKind && object.kind !== expectedKind) return null;
+    if (!expectedKind && !object.kind) return null;
+    items.push(object);
+  }
+  return items;
+}
+function askedOf(args) {
+  let namespace;
+  let context;
+  let allNamespaces = false;
+  for (let i = 0; i < args.length; i += 1) {
+    const token = args[i];
+    if (token === "-A" || token === "--all-namespaces" || token === "-A=true" || token === "--all-namespaces=true") {
+      allNamespaces = true;
+    } else if (token.startsWith("-n=")) namespace = token.slice("-n=".length);
+    else if ((token === "-n" || token === "--namespace") && args[i + 1]) namespace = args[++i];
+    else if (token.startsWith("--namespace=")) namespace = token.slice("--namespace=".length);
+    else if (token === "--context" && args[i + 1]) context = args[++i];
+    else if (token.startsWith("--context=")) context = token.slice("--context=".length);
+  }
+  return { namespace, allNamespaces, context };
+}
+function askedFlags(asked) {
+  const flags = [];
+  if (asked.namespace) flags.push("-n", asked.namespace);
+  if (asked.context) flags.push("--context", asked.context);
+  if (asked.allNamespaces) flags.push("-A");
+  return flags;
+}
+function withContext(flags, context) {
+  return context ? [...flags, "--context", context] : flags;
+}
+function targetOf(args) {
+  const rest = positionalWords(args).words.slice(1);
+  const selector = flagValue(args, ["-l", "--selector"]);
+  const all = args.some((token2) => token2 === "--all" || token2 === "--all=true");
+  const slash = rest.filter((word) => word.includes("/"));
+  if (slash.length > 0) {
+    if (slash.length !== rest.length) return "mixed";
+    const kinds = slash.map((word) => word.slice(0, word.indexOf("/")));
+    const names2 = slash.map((word) => word.slice(word.indexOf("/") + 1));
+    if (new Set(kinds).size !== 1 || names2.some((name) => name.length === 0)) return "mixed";
+    const token2 = kinds[0];
+    return { token: token2, names: names2, resource: resolveResource(token2), selector: void 0, all: false };
+  }
+  const token = rest[0];
+  if (!token) return null;
+  const resource = resolveResource(token);
+  const names = rest.slice(1);
+  if (!all && !selector && names.length === 0) return null;
+  if (all) return { token, names: [], resource, selector: void 0, all: true };
+  if (selector) return { token, names: [], resource, selector, all: false };
+  return { token, names, resource, selector: void 0, all: false };
+}
+function remember(blast, subject) {
+  subjects.set(blast, subject);
+  return blast;
+}
+function expired(fetch) {
+  return fetch.now() - fetch.started >= BLAST_BUDGET_MS;
+}
+function jsonArgs(resource, middle, scope) {
+  return ["get", resource, ...middle, ...scope, "-o", "json", "--request-timeout=4s"];
+}
+function fetchJson(fetch, args) {
+  if (expired(fetch)) return "timeout";
+  const result = fetch.getJson(args);
+  if (expired(fetch)) return "timeout";
+  return result;
+}
+function scopeFlags(namespaces) {
+  if (namespaces.length > 1) return ["-A"];
+  const ns = namespaces[0];
+  return ns ? ["-n", ns] : [];
+}
+function stringMap(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const entries = Object.entries(value);
+  if (entries.length === 0) return null;
+  const map = {};
+  for (const [key, entry] of entries) {
+    if (typeof entry !== "string") return null;
+    map[key] = entry;
+  }
+  return map;
+}
+function labelsMatch(selector, labels) {
+  return Object.entries(selector).every(([key, value]) => labels[key] === value);
+}
+function podRef(item, fallbackNs) {
+  const name = item.metadata?.name;
+  if (!name) return null;
+  return {
+    namespace: item.metadata?.namespace || fallbackNs,
+    name,
+    labels: item.metadata?.labels ?? {},
+    ready: item.status?.conditions?.some(
+      (condition) => condition.type === "Ready" && condition.status === "True"
+    ) === true
+  };
+}
+var CONTROLLERS = /* @__PURE__ */ new Set(["Deployment", "StatefulSet", "DaemonSet", "ReplicaSet"]);
+function selectorOf(item) {
+  const raw = item.spec?.selector;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const selector = raw;
+  if (Array.isArray(selector.matchExpressions) && selector.matchExpressions.length > 0) return null;
+  return stringMap(selector.matchLabels);
+}
+function labelSelector(labels) {
+  return Object.keys(labels).sort().map((key) => `${key}=${labels[key]}`).join(",");
+}
+function expandControllers(items, controllers, fetch, asked, fallbackNs, partial) {
+  const named = { controllers: controllers.slice(0, 20) };
+  const selectors = [];
+  const namespaces = /* @__PURE__ */ new Set();
+  for (const item of items) {
+    const selector = selectorOf(item);
+    if (!selector) return withExtras(pack(controllers, partial, named), [], fetch, asked);
+    selectors.push(selector);
+    namespaces.add(item.metadata?.namespace || fallbackNs);
+  }
+  const encoded = new Set(selectors.map(labelSelector));
+  if (encoded.size !== 1 || namespaces.size > 1 && !asked.allNamespaces) {
+    return withExtras(pack(controllers, partial, named), [], fetch, asked);
+  }
+  const scope = asked.allNamespaces ? withContext(["-A"], asked.context) : withContext(scopeFlags([...namespaces]), asked.context);
+  const result = fetchJson(fetch, jsonArgs("pods", ["-l", [...encoded][0]], scope));
+  if (result === "timeout") return unknown("timed out");
+  if (!result.ok) return unknown(`kubectl get pods: ${result.error || "failed"}`);
+  const podItems = itemsOf(result.json, "Pod");
+  if (!podItems) return unknown("kubectl get pods: not a Pod object or list");
+  const objects = podItems.flatMap((item) => {
+    const name = item.metadata?.name;
+    if (!name) return [];
+    return [{ kind: "pod", namespace: item.metadata?.namespace || fallbackNs, name }];
+  });
+  const pods = podItems.flatMap((item) => {
+    const pod = podRef(item, fallbackNs);
+    return pod ? [pod] : [];
+  });
+  const podBase = pack(objects, { kind: "pod", namespace: fallbackNs }, named);
+  const withServices = attachServices(podBase, pods, fetch, fallbackNs, {
+    context: asked.context,
+    reuse: false
+  });
+  if (withServices.status !== "ok") return withServices;
+  return withExtras(remember(withServices, subjects.get(podBase)), pods, fetch, asked);
+}
+function serviceNote(base, error) {
+  return { ...base, services: [], serviceNote: `services unknown (${error || "failed"})` };
+}
+function attachServices(base, pods, fetch, fallbackNs, options) {
+  if (pods.length === 0) return base;
+  if (pods.length > 200) {
+    return {
+      ...base,
+      services: [],
+      serviceNote: `service check skipped (${pods.length} pods exceeds 200)`
+    };
+  }
+  const namespaces = [...new Set(pods.map((pod) => pod.namespace))];
+  if (namespaces.length > 5) {
+    return {
+      ...base,
+      services: [],
+      serviceNote: `service check skipped (${namespaces.length} namespaces exceeds 5)`
+    };
+  }
+  const services = fetchJson(
+    fetch,
+    jsonArgs("services", [], withContext(scopeFlags(namespaces), options.context))
+  );
+  if (services === "timeout") return serviceNote(base, "timed out");
+  if (!services.ok) return serviceNote(base, services.error);
+  const items = itemsOf(services.json, "Service");
+  if (!items) return serviceNote(base, "not a Service object or list");
+  const matched = [];
+  for (const item of items) {
+    const selector = stringMap(item.spec?.selector);
+    const name = item.metadata?.name;
+    const ns = item.metadata?.namespace || (namespaces.length === 1 ? namespaces[0] : "");
+    if (!selector || !name || !ns) continue;
+    const matchedPods = pods.filter(
+      (pod) => pod.namespace === ns && labelsMatch(selector, pod.labels)
+    ).length;
+    if (matchedPods === 0) continue;
+    matched.push({ namespace: ns, name, selector, matchedPods });
+  }
+  if (matched.length === 0) return base;
+  let alive = pods;
+  if (!options.reuse) {
+    const serviceNamespaces = [...new Set(matched.map((item) => item.namespace))];
+    const survivors = fetchJson(
+      fetch,
+      jsonArgs("pods", [], withContext(scopeFlags(serviceNamespaces), options.context))
+    );
+    if (survivors === "timeout") return serviceNote(base, "timed out");
+    if (!survivors.ok) return serviceNote(base, survivors.error);
+    const survivorItems = itemsOf(survivors.json, "Pod");
+    if (!survivorItems) return serviceNote(base, "not a Pod object or list");
+    alive = survivorItems.flatMap((item) => {
+      const pod = podRef(item, fallbackNs);
+      return pod ? [pod] : [];
+    });
+  }
+  const deleted = new Set(pods.map((pod) => `${pod.namespace}/${pod.name}`));
+  return {
+    ...base,
+    services: matched.map((item) => ({
+      namespace: item.namespace,
+      name: item.name,
+      matchedPods: item.matchedPods,
+      readyPodsRemaining: alive.filter(
+        (pod) => pod.namespace === item.namespace && !deleted.has(`${pod.namespace}/${pod.name}`) && labelsMatch(item.selector, pod.labels) && pod.ready
+      ).length
+    }))
+  };
+}
+function carry(next, prev) {
+  const subject = subjects.get(prev);
+  if (subject) subjects.set(next, subject);
+  return next;
+}
+function podBudget(pods) {
+  return pods.length > 0 && pods.length <= 200 && new Set(pods.map((pod) => pod.namespace)).size <= 5;
+}
+function withPdbs(blast, pods, fetch, asked) {
+  if (!podBudget(pods)) return blast;
+  const namespaces = [...new Set(pods.map((pod) => pod.namespace))];
+  const result = fetchJson(
+    fetch,
+    jsonArgs("pdb", [], withContext(scopeFlags(namespaces), asked.context))
+  );
+  if (result === "timeout") return carry({ ...blast, pdbNote: "pdbs unknown (timed out)" }, blast);
+  if (!result.ok)
+    return carry({ ...blast, pdbNote: `pdbs unknown (${result.error || "failed"})` }, blast);
+  const items = itemsOf(result.json, "PodDisruptionBudget");
+  if (!items) {
+    return carry(
+      { ...blast, pdbNote: "pdbs unknown (not a PodDisruptionBudget object or list)" },
+      blast
+    );
+  }
+  const pdbs = [];
+  for (const item of items) {
+    const selector = selectorOf(item);
+    const name = item.metadata?.name;
+    const ns = item.metadata?.namespace || (namespaces.length === 1 ? namespaces[0] : "");
+    const allowed = item.status?.disruptionsAllowed;
+    if (!selector || !name || !ns || typeof allowed !== "number") continue;
+    const matched = pods.some((pod) => pod.namespace === ns && labelsMatch(selector, pod.labels));
+    if (!matched) continue;
+    pdbs.push({ namespace: ns, name, disruptionsAllowed: allowed });
+  }
+  return carry({ ...blast, pdbs }, blast);
+}
+function withHpas(blast, fetch, asked) {
+  const controllers = blast.controllers ?? [];
+  if (controllers.length === 0) return blast;
+  const namespaces = [...new Set(controllers.map((item) => item.namespace))];
+  if (namespaces.length > 5) return blast;
+  const result = fetchJson(
+    fetch,
+    jsonArgs("hpa", [], withContext(scopeFlags(namespaces), asked.context))
+  );
+  if (result === "timeout" || !result.ok) return blast;
+  const items = itemsOf(result.json, "HorizontalPodAutoscaler");
+  if (!items) return blast;
+  const hpas = [];
+  for (const item of items) {
+    const ref = item.spec?.scaleTargetRef;
+    const name = item.metadata?.name;
+    if (!ref?.name || !name) continue;
+    const target = controllers.find(
+      (controller) => controller.name === ref.name && controller.kind === (ref.kind ?? "").toLowerCase()
+    );
+    if (!target) continue;
+    hpas.push({
+      namespace: item.metadata?.namespace || target.namespace,
+      name,
+      minReplicas: item.spec?.minReplicas ?? 1,
+      maxReplicas: item.spec?.maxReplicas ?? item.spec?.minReplicas ?? 1,
+      target: `${target.kind}/${target.name}`
+    });
+  }
+  if (hpas.length === 0) return blast;
+  return carry({ ...blast, hpas }, blast);
+}
+function withExtras(blast, pods, fetch, asked) {
+  return withHpas(withPdbs(blast, pods, fetch, asked), fetch, asked);
+}
+function dryRunArgs(args) {
+  const next = [...args];
+  if (!next.some((token) => token === "--dry-run" || token.startsWith("--dry-run="))) {
+    next.push("--dry-run=server");
+  }
+  if (!next.includes("-o") && !next.some((token) => token.startsWith("--output"))) {
+    next.push("-o", "json");
+  }
+  if (!next.some((token) => token === "--request-timeout" || token.startsWith("--request-timeout="))) {
+    next.push("--request-timeout=4s");
+  }
+  return next;
+}
+function countOf(json) {
+  if (!json || typeof json !== "object") return null;
+  const doc = json;
+  if (Array.isArray(doc.items)) return doc.items.length;
+  if (doc.metadata?.name) return 1;
+  return null;
+}
+function withDryRun(blast, args, fetch) {
+  if (args[0] !== "delete" || blast.status === "skipped") return blast;
+  const result = fetchJson(fetch, dryRunArgs(args));
+  if (result === "timeout") {
+    return carry({ ...blast, dryRun: { status: "unknown", reason: "timed out" } }, blast);
+  }
+  if (!result.ok) {
+    return carry(
+      { ...blast, dryRun: { status: "unknown", reason: result.error || "failed" } },
+      blast
+    );
+  }
+  const count = countOf(result.json);
+  if (count === null) {
+    return carry({ ...blast, dryRun: { status: "unknown", reason: "not a delete result" } }, blast);
+  }
+  return carry({ ...blast, dryRun: { status: "ok", count } }, blast);
+}
+function ownerOf(item, namespace, name) {
+  const owner = item.metadata?.ownerReferences?.find((ref) => ref.controller) ?? item.metadata?.ownerReferences?.[0];
+  if (!owner?.kind || !owner.name) return [];
+  return [{ namespace, pod: name, kind: owner.kind.toLowerCase(), name: owner.name }];
+}
+function fromItems(items, resource, asked, fetch, fallbackNs, reuse) {
+  const owners = [];
+  const objects = items.flatMap((item) => {
+    const name = item.metadata?.name;
+    if (!name) return [];
+    const kind = resource?.singular ?? (item.kind ?? "object").toLowerCase();
+    const namespace = item.metadata?.namespace || fallbackNs;
+    if (kind === "pod") owners.push(...ownerOf(item, namespace, name) ?? []);
+    return [{ kind, namespace, name }];
+  });
+  const singular = resource?.singular ?? (objects.every((object) => object.kind === "pod") ? "pod" : objects[0]?.kind ?? "object");
+  const partial = { kind: singular, namespace: fallbackNs };
+  if (items.length > 0 && items.every((item) => CONTROLLERS.has(item.kind ?? ""))) {
+    return expandControllers(items, objects, fetch, asked, fallbackNs, partial);
+  }
+  const base = pack(objects, partial, owners.length ? { owners } : {});
+  if (singular !== "pod" && !(!resource && objects.some((object) => object.kind === "pod"))) {
+    return base;
+  }
+  const pods = items.flatMap((item) => {
+    if (item.kind !== "Pod" && resource?.singular !== "pod") return [];
+    if (resource?.singular === "pod" || item.kind === "Pod") {
+      const pod = podRef(item, fallbackNs);
+      return pod ? [pod] : [];
+    }
+    return [];
+  });
+  const withServices = attachServices(base, pods, fetch, fallbackNs, {
+    context: asked.context,
+    reuse
+  });
+  if (withServices.status !== "ok") return withServices;
+  return withExtras(remember(withServices, subjects.get(base)), pods, fetch, asked);
+}
+function isKustomize(args) {
+  return args.some((token) => {
+    const name = token.split("=", 1)[0];
+    return name === "-k" || name === "--kustomize";
+  });
+}
+function manifestFiles(args) {
+  const files = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const token = args[i];
+    if (token === "-f" || token === "--filename") {
+      if (args[i + 1]) files.push(args[i += 1]);
+    } else if (token.startsWith("--filename=")) files.push(token.slice("--filename=".length));
+    else if (token.startsWith("-f=")) files.push(token.slice("-f=".length));
+  }
+  return files;
+}
+function isDaemon(item) {
+  return item.metadata?.ownerReferences?.some((owner) => owner.kind === "DaemonSet") === true;
+}
+function blastFiles(files, plan, asked, fetch) {
+  const fallbackNs = asked.namespace || plan.namespace;
+  const groups = /* @__PURE__ */ new Map();
+  for (const file of files) {
+    const read = manifestRefs(file);
+    if (!read.ok) return unknown(`manifest: ${read.error}`);
+    for (const ref of read.refs) {
+      const namespace = ref.namespace || fallbackNs;
+      const key = `${ref.kind.toLowerCase()}\0${namespace}`;
+      const list = groups.get(key) ?? [];
+      list.push({ ...ref, namespace });
+      groups.set(key, list);
+    }
+  }
+  if (groups.size === 0) return skipped("no name or selector");
+  const items = [];
+  for (const group of groups.values()) {
+    const token = group[0].kind.toLowerCase();
+    const resource = resolveResource(token);
+    const namespace = group[0].namespace || fallbackNs;
+    const result = fetchJson(
+      fetch,
+      jsonArgs(
+        resource?.singular ?? token,
+        group.map((ref) => ref.name),
+        withContext(["-n", namespace], asked.context)
+      )
+    );
+    if (result === "timeout")
+      return items.length ? fromItems(items, void 0, asked, fetch, fallbackNs, false) : unknown("timed out");
+    if (!result.ok) {
+      return items.length ? fromItems(items, void 0, asked, fetch, fallbackNs, false) : unknown(`kubectl get ${token}: ${result.error || "failed"}`);
+    }
+    const parsed = itemsOf(result.json, resource?.apiKind);
+    if (!parsed) {
+      return items.length ? fromItems(items, void 0, asked, fetch, fallbackNs, false) : unknown(`kubectl get ${token}: not a ${resource?.apiKind ?? "object"} object or list`);
+    }
+    items.push(...parsed);
+  }
+  return fromItems(items, void 0, asked, fetch, fallbackNs, false);
+}
+function blastDrain(args, plan, fetch, asked) {
+  const node = positionalWords(args).words[1];
+  if (!node) return skipped("no name or selector");
+  const fallbackNs = asked.namespace || plan.namespace;
+  const scope = asked.namespace && !asked.allNamespaces ? ["-n", asked.namespace] : ["-A"];
+  const result = fetchJson(
+    fetch,
+    jsonArgs(
+      "pods",
+      ["--field-selector", `spec.nodeName=${node}`],
+      withContext(scope, asked.context)
+    )
+  );
+  if (result === "timeout") return unknown("timed out");
+  if (!result.ok) return unknown(`kubectl get pods: ${result.error || "failed"}`);
+  const parsed = itemsOf(result.json, "Pod");
+  if (!parsed) return unknown("kubectl get pods: not a Pod object or list");
+  return fromItems(
+    parsed.filter((item) => !isDaemon(item)),
+    resolveResource("pod"),
+    asked,
+    fetch,
+    fallbackNs,
+    false
+  );
+}
+function blastRadius(plan, args, getJson, clock) {
+  const now = clock?.now ?? Date.now;
+  const started = now();
+  const fetch = { getJson, now, started };
+  const asked = askedOf(args);
+  const scaleZero = plan.verb === "scale" && flagValue(args, ["--replicas"]) === "0";
+  if (plan.verb === "drain") return blastDrain(args, plan, fetch, asked);
+  if (plan.verb !== "delete" && !scaleZero) return skipped("not a delete");
+  if (isKustomize(args)) return skipped("kustomize delete (-k) is not expanded");
+  const files = manifestFiles(args);
+  if (files.some((file) => /^https?:\/\//i.test(file))) {
+    return skipped("remote manifest URLs are not expanded");
+  }
+  if (files.length > 0) return withDryRun(blastFiles(files, plan, asked, fetch), args, fetch);
+  const target = targetOf(args);
+  if (target === "mixed") return skipped("mixed resource kinds");
+  if (!target) return skipped("no name or selector");
+  const middle = target.selector ? ["-l", target.selector] : target.all ? [] : target.names;
+  const result = fetchJson(fetch, jsonArgs(target.token, middle, askedFlags(asked)));
+  if (result === "timeout") return unknown("timed out");
+  if (!result.ok) return unknown(`kubectl get ${target.token}: ${result.error || "failed"}`);
+  const items = itemsOf(result.json, target.resource?.apiKind);
+  if (!items) {
+    const kind = target.resource?.apiKind ?? "object";
+    return unknown(`kubectl get ${target.token}: not a ${kind} object or list`);
+  }
+  const finished = fromItems(
+    items,
+    target.resource,
+    asked,
+    fetch,
+    asked.namespace || plan.namespace,
+    target.all && (target.resource?.singular === "pod" || target.token === "pods" || target.token === "pod")
+  );
+  return withDryRun(finished, args, fetch);
 }
 
 // cli/reveal-output.ts
@@ -2052,34 +2945,8 @@ function formatAdvice(advice) {
 
 // cli/live.ts
 var import_node_child_process = require("node:child_process");
-var import_node_fs3 = __toESM(require("node:fs"), 1);
-var import_node_path3 = __toESM(require("node:path"), 1);
-
-// cli/private.ts
-var import_node_fs2 = __toESM(require("node:fs"), 1);
-var import_node_os = __toESM(require("node:os"), 1);
-var import_node_path2 = __toESM(require("node:path"), 1);
-function stateDir() {
-  return import_node_path2.default.join(import_node_os.default.homedir(), ".kube-shell");
-}
-function writePrivate(file, data) {
-  const dir = import_node_path2.default.dirname(file);
-  import_node_fs2.default.mkdirSync(dir, { recursive: true, mode: 448 });
-  import_node_fs2.default.chmodSync(dir, 448);
-  const tmp = `${file}.${process.pid}.tmp`;
-  import_node_fs2.default.writeFileSync(tmp, data, { mode: 384 });
-  import_node_fs2.default.chmodSync(tmp, 384);
-  import_node_fs2.default.renameSync(tmp, file);
-  import_node_fs2.default.chmodSync(file, 384);
-}
-function tryWritePrivate(file, data) {
-  try {
-    writePrivate(file, data);
-    return true;
-  } catch {
-    return false;
-  }
-}
+var import_node_fs5 = __toESM(require("node:fs"), 1);
+var import_node_path5 = __toESM(require("node:path"), 1);
 
 // cli/redact-output.ts
 function wantsRedactedStdout(args) {
@@ -2175,7 +3042,7 @@ function redactKubectlStdout(args, stdout) {
 // cli/live.ts
 var TTL_MS = 12e3;
 function cachePath() {
-  return import_node_path3.default.join(stateDir(), "live.json");
+  return import_node_path5.default.join(stateDir(), "live.json");
 }
 var KIND = {
   Pod: "pod",
@@ -2233,7 +3100,7 @@ function readCache(key) {
   const now = Date.now();
   if (memory && memory.key === key && now - memory.at < TTL_MS) return memory.cluster;
   try {
-    const parsed = JSON.parse(import_node_fs3.default.readFileSync(cachePath(), "utf8"));
+    const parsed = JSON.parse(import_node_fs5.default.readFileSync(cachePath(), "utf8"));
     if (parsed.key === key && now - parsed.at < TTL_MS && parsed.cluster?.objects) {
       memory = parsed;
       return parsed.cluster;
@@ -2251,7 +3118,7 @@ function invalidateLive() {
   memory = null;
   contextMemory = null;
   try {
-    import_node_fs3.default.rmSync(cachePath(), { force: true });
+    import_node_fs5.default.rmSync(cachePath(), { force: true });
   } catch {
   }
 }
@@ -2290,7 +3157,7 @@ function contextCluster() {
 function contextArgs(context, current) {
   return context && context !== current ? ["--context", context] : [];
 }
-function itemsOf(args) {
+function itemsOf2(args) {
   const result = run([...args, "-o", "json", "--request-timeout=6s"], 8e3);
   if (result.code !== 0 || !result.stdout.trim()) return [];
   try {
@@ -2492,7 +3359,7 @@ function fetchProjectedLists(ctx, scope, groups) {
 }
 function fetchEvents(ctx, ns, all) {
   const scope = all ? ["--all-namespaces"] : ["-n", ns || "default"];
-  const items = itemsOf([...ctx, "get", "events", ...scope]);
+  const items = itemsOf2([...ctx, "get", "events", ...scope]);
   return items.flatMap((item) => {
     const event = mapEvent(item, ns || "default");
     return event ? [event] : [];
@@ -2521,7 +3388,7 @@ function liveCluster(engineLine) {
   const cached = readCache(key);
   if (cached) return cached;
   const ctx = contextArgs(scope.context, base.current);
-  const scoped = itemsOf([
+  const scoped = itemsOf2([
     ...ctx,
     "get",
     "ns,nodes,pv,storageclasses.storage.k8s.io,priorityclasses.scheduling.k8s.io,customresourcedefinitions.apiextensions.k8s.io"
@@ -2571,6 +3438,32 @@ function applyLiveContext(cluster) {
 function kubectlArgs(engineLine) {
   return tokenize(engineLine).slice(1).map((token) => unquote(token.text));
 }
+function stderrLine(stderr) {
+  const line = stderr.split(/\r?\n/).map((item) => item.trim()).find(Boolean);
+  return (line ?? "").slice(0, 120);
+}
+function runJson(args, timeoutMs = 3e3) {
+  const { cmd, prefix } = invocation();
+  const text = (value) => typeof value === "string" ? value : value ? value.toString("utf8") : "";
+  try {
+    const stdout = (0, import_node_child_process.execFileSync)(cmd, [...prefix, ...args], {
+      encoding: "utf8",
+      timeout: timeoutMs,
+      maxBuffer: 16 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    try {
+      return { ok: true, json: JSON.parse(stdout), error: "" };
+    } catch {
+      return { ok: false, json: null, error: "invalid JSON" };
+    }
+  } catch (err) {
+    const failed = err;
+    const line = stderrLine(text(failed.stderr));
+    const error = line || (failed.code === "ETIMEDOUT" ? "timed out" : "failed");
+    return { ok: false, json: null, error };
+  }
+}
 function captureLive(args) {
   const { cmd, prefix } = invocation();
   try {
@@ -2611,10 +3504,146 @@ function runLive(args, options = {}) {
   return result.status ?? 1;
 }
 
+// cli/audit.ts
+var import_node_crypto = __toESM(require("node:crypto"), 1);
+var import_node_fs6 = __toESM(require("node:fs"), 1);
+var import_node_path6 = __toESM(require("node:path"), 1);
+
+// cli/redact.ts
+var PAIR_FLAGS = ["--from-literal", "--from-file"];
+var VALUE_FLAGS2 = ["--docker-password", "--password", "--token", "--client-secret"];
+var SENSITIVE_KEY = /^(password|token|secret|apikey|api-key|client-secret|client_secret)$/i;
+function hidePair(value) {
+  const eq = value.indexOf("=");
+  if (eq < 0) return "***";
+  return `${value.slice(0, eq)}=***`;
+}
+function matchFlag(token, flags) {
+  return flags.find((flag) => token === flag || token.startsWith(`${flag}=`));
+}
+function redactAssignment(token) {
+  const eq = token.indexOf("=");
+  if (eq < 0) return token;
+  const key = token.slice(0, eq);
+  if (SENSITIVE_KEY.test(key)) return `${key}=***`;
+  return token;
+}
+function redactLine(line) {
+  const tokens = line.split(" ");
+  const out = [];
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i] ?? "";
+    const pair = matchFlag(token, PAIR_FLAGS);
+    if (pair) {
+      if (token === pair) {
+        out.push(token);
+        const next = tokens[i + 1];
+        if (next !== void 0) {
+          out.push(hidePair(next));
+          i += 1;
+        }
+      } else {
+        out.push(`${pair}=${hidePair(token.slice(pair.length + 1))}`);
+      }
+      continue;
+    }
+    const valueFlag = matchFlag(token, VALUE_FLAGS2);
+    if (valueFlag) {
+      if (token === valueFlag) {
+        out.push(token);
+        if (tokens[i + 1] !== void 0) {
+          out.push("***");
+          i += 1;
+        }
+      } else {
+        out.push(`${valueFlag}=***`);
+      }
+      continue;
+    }
+    out.push(redactAssignment(token));
+  }
+  return out.join(" ");
+}
+
+// cli/audit.ts
+var MAX_BYTES = 5 * 1024 * 1024;
+function auditPath() {
+  return import_node_path6.default.join(stateDir(), "audit.jsonl");
+}
+function auditEnabled(policy, env = process.env) {
+  if (policy?.audit === "required") return true;
+  return env.KUBE_SHELL_AUDIT !== "0";
+}
+function redactArgv(argv) {
+  return redactLine(argv.join(" ")).split(" ");
+}
+function appendAudit(entry, maxBytes = MAX_BYTES) {
+  const file = auditPath();
+  const line = `${JSON.stringify(entry)}
+`;
+  try {
+    if (import_node_fs6.default.existsSync(file) && import_node_fs6.default.statSync(file).size >= maxBytes) {
+      const previous = `${file}.1`;
+      import_node_fs6.default.rmSync(previous, { force: true });
+      import_node_fs6.default.renameSync(file, previous);
+    }
+    if (!import_node_fs6.default.existsSync(file)) writePrivate(file, line);
+    else {
+      import_node_fs6.default.appendFileSync(file, line);
+      import_node_fs6.default.chmodSync(file, 384);
+    }
+  } catch {
+    return;
+  }
+  if (process.env.KUBE_SHELL_AUDIT_STDERR === "1") process.stderr.write(line);
+}
+function tailAudit(count = 20) {
+  const file = auditPath();
+  if (!import_node_fs6.default.existsSync(file)) return [];
+  const lines = import_node_fs6.default.readFileSync(file, "utf8").split("\n").filter(Boolean);
+  const n = Number.isFinite(count) && count > 0 ? Math.floor(count) : 20;
+  return lines.slice(-n);
+}
+function newAuditId() {
+  return import_node_crypto.default.randomBytes(8).toString("hex");
+}
+
+// cli/plans.ts
+var import_node_crypto2 = __toESM(require("node:crypto"), 1);
+var import_node_fs7 = __toESM(require("node:fs"), 1);
+var import_node_path7 = __toESM(require("node:path"), 1);
+var TTL_MS2 = 5 * 60 * 1e3;
+function planPath(id) {
+  return import_node_path7.default.join(stateDir(), "plans", `${id}.json`);
+}
+function mintPlan(record, now = Date.now()) {
+  const planId = import_node_crypto2.default.randomBytes(16).toString("hex");
+  const stored = { planId, ...record, expires: now + TTL_MS2 };
+  writePrivate(planPath(planId), JSON.stringify(stored));
+  return planId;
+}
+function consumePlan(planId, expected, now = Date.now()) {
+  const file = planPath(planId);
+  let stored;
+  try {
+    stored = JSON.parse(import_node_fs7.default.readFileSync(file, "utf8"));
+  } catch {
+    return { ok: false, reason: "plan expired or unknown" };
+  }
+  if (!stored.expires || stored.expires <= now) {
+    import_node_fs7.default.rmSync(file, { force: true });
+    return { ok: false, reason: "plan expired or unknown" };
+  }
+  const same = stored.context === expected.context && stored.namespace === expected.namespace && JSON.stringify(stored.argv) === JSON.stringify(expected.argv);
+  if (!same) return { ok: false, reason: "plan does not match this command" };
+  import_node_fs7.default.rmSync(file, { force: true });
+  return { ok: true };
+}
+
 // cli/tty.ts
-var import_node_fs4 = __toESM(require("node:fs"), 1);
+var import_node_fs8 = __toESM(require("node:fs"), 1);
 var RETRY = /* @__PURE__ */ new Set(["EAGAIN", "EWOULDBLOCK", "EINTR"]);
-function openPromptInput(platform = process.platform, open = (file) => import_node_fs4.default.openSync(file, "r")) {
+function openPromptInput(platform = process.platform, open = (file) => import_node_fs8.default.openSync(file, "r")) {
   const stdin = { fd: 0, close: () => {
   } };
   if (platform === "win32") return stdin;
@@ -2624,9 +3653,9 @@ function openPromptInput(platform = process.platform, open = (file) => import_no
   } catch {
     return stdin;
   }
-  return { fd, close: () => import_node_fs4.default.closeSync(fd) };
+  return { fd, close: () => import_node_fs8.default.closeSync(fd) };
 }
-function readSyncRetry(fd, buf, read = (f, b) => import_node_fs4.default.readSync(f, b, 0, b.length, null), sleep = sleepMs) {
+function readSyncRetry(fd, buf, read = (f, b) => import_node_fs8.default.readSync(f, b, 0, b.length, null), sleep = sleepMs) {
   for (; ; ) {
     try {
       return read(fd, buf);
@@ -2848,8 +3877,25 @@ function deleteEngineLine(row) {
   if (row.ns) parts.push("-n", row.ns);
   return parts.join(" ");
 }
-function runDelete(plan) {
-  const result = captureLive(kubectlArgs(plan.command));
+function runDelete(plan, yes) {
+  const started = Date.now();
+  const argv = kubectlArgs(plan.command);
+  const result = captureLive(argv);
+  if (auditEnabled(null)) {
+    appendAudit({
+      id: newAuditId(),
+      timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+      actor: process.stdin.isTTY ? "human-tty" : "human-cli",
+      context: plan.context,
+      namespace: plan.namespace,
+      argv: redactArgv(argv),
+      risk: plan.risk,
+      decision: "executed",
+      approver: yes ? "flag-yes" : "prompt-y",
+      exitCode: result.code,
+      durationMs: Date.now() - started
+    });
+  }
   return (result.stderr || result.stdout || "deleted").trim().split("\n")[0] ?? "deleted";
 }
 function boardFrom(word) {
@@ -3102,6 +4148,15 @@ function openView(clusterIn, options) {
             state = { ...state, textLength: text.length, scroll: 0, mode: "text" };
           }
         }
+        if (effect.type === "arm-delete" || effect.type === "delete") {
+          if (options.typedConfirm) {
+            state = {
+              ...state,
+              message: "typed context: run kube delete from the shell"
+            };
+            continue;
+          }
+        }
         if (effect.type === "arm-delete") {
           const row = list[effect.index];
           if (row) {
@@ -3117,7 +4172,7 @@ function openView(clusterIn, options) {
           const planned = pendingDelete ?? (row ? planCommand(deleteEngineLine(row), cluster) : null);
           pendingDelete = null;
           if (planned) {
-            state = { ...state, message: runDelete(planned) };
+            state = { ...state, message: runDelete(planned, options.yes) };
             reload();
           }
         }
@@ -3132,6 +4187,47 @@ function openView(clusterIn, options) {
 }
 
 // cli/commands.ts
+function wantsBlast(plan) {
+  return plan.verb === "delete" || plan.verb === "drain" || plan.verb === "scale" && plan.risk === "high";
+}
+var sessionScope = /* @__PURE__ */ new WeakMap();
+function commandArgs(engineLine, cluster) {
+  const args = [...kubectlArgs(engineLine)];
+  const scope = sessionScope.get(cluster);
+  const hasNs = args.some(
+    (token) => token === "-n" || token === "--namespace" || token.startsWith("--namespace=") || token.startsWith("-n=")
+  );
+  const hasCtx = args.some((token) => token === "--context" || token.startsWith("--context="));
+  if (scope?.namespace && !hasNs) args.push("-n", scope.namespace);
+  if (scope?.context && !hasCtx) args.push("--context", scope.context);
+  return args;
+}
+function liveBlast(plan, engineLine, cluster) {
+  const started = Date.now();
+  const now = () => Date.now();
+  const getJson = (args) => {
+    const left = BLAST_BUDGET_MS - (now() - started);
+    if (left <= 0) return { ok: false, json: null, error: "timed out" };
+    return runJson(args, left);
+  };
+  return blastRadius(plan, commandArgs(engineLine, cluster), getJson, { now });
+}
+function useNamespace(cluster, namespace) {
+  const next = {
+    ...cluster,
+    contexts: cluster.contexts.map(
+      (item) => item.name === cluster.current ? { ...item, namespace } : item
+    )
+  };
+  sessionScope.set(next, { ...sessionScope.get(cluster), namespace });
+  return next;
+}
+function useContext(cluster, name) {
+  if (!cluster.contexts.some((item) => item.name === name)) return null;
+  const next = { ...cluster, current: name };
+  sessionScope.set(next, { ...sessionScope.get(cluster), context: name });
+  return next;
+}
 function runUserLine(line, cluster, host2, options = {}) {
   let trimmed = line.trim();
   const meta = metaOf(trimmed);
@@ -3169,14 +4265,38 @@ function runUserLine(line, cluster, host2, options = {}) {
     if (!script) return { output: "usage: kube completion bash|zsh|fish", ok: false, cluster };
     return { output: script, ok: true, cluster };
   }
+  if (meta === "audit") {
+    const parts = trimmed.split(/\s+/);
+    if (parts[1] && parts[1] !== "tail") {
+      return { output: "usage: kube audit tail [-n 20]", ok: false, cluster };
+    }
+    let count = 20;
+    const flag = parts.indexOf("-n");
+    if (flag >= 0) count = Number(parts[flag + 1]);
+    const lines = tailAudit(count);
+    return { output: lines.join("\n"), ok: true, cluster };
+  }
+  if (meta === "ns" || meta === "ctx") {
+    const name = trimmed.split(/\s+/).slice(1).join(" ").trim();
+    if (!name) return { output: `usage: ${meta} <name>`, ok: false, cluster };
+    if (!cluster.current) return { output: "no current context", ok: false, cluster };
+    if (meta === "ns") {
+      return { output: `namespace ${name}`, ok: true, cluster: useNamespace(cluster, name) };
+    }
+    const next = useContext(cluster, name);
+    if (!next) return { output: `no context ${name}`, ok: false, cluster };
+    return { output: `context ${name}`, ok: true, cluster: next };
+  }
   if (meta === "view" || meta === "ui") {
     const parts = trimmed.split(/\s+/).slice(1);
     const all = parts.includes("-A") || parts.includes("--all-namespaces") || parts.includes("all");
     const word = parts.find((part) => part !== "all" && !part.startsWith("-"));
+    const rule2 = ruleFor(host2.policy ?? null, cluster.current);
     const next = openView(cluster, {
       board: boardFrom(word),
       all,
       yes: host2.yes,
+      typedConfirm: rule2.confirm === "typed",
       reload: (wantAll, namespace) => {
         invalidateLive();
         return liveCluster(wantAll ? "kubectl get pods -A" : `kubectl get pods -n ${namespace}`);
@@ -3190,7 +4310,23 @@ function runUserLine(line, cluster, host2, options = {}) {
     if (!body) return { output: "usage: kube plan [--json] delete pod <name>", ok: false, cluster };
     const view2 = toEngine(body, body.length, "repl");
     const planned2 = planCommand(view2.line, cluster);
-    return { output: asJson ? JSON.stringify(planned2) : formatPlan(planned2), ok: true, cluster };
+    const blast = wantsBlast(planned2) ? liveBlast(planned2, view2.line, cluster) : void 0;
+    if (asJson) {
+      const payload = blast ? { ...planned2, blast } : planned2;
+      const planId = mintPlan({
+        context: planned2.context,
+        namespace: planned2.namespace,
+        argv: commandArgs(view2.line, cluster)
+      });
+      return { output: JSON.stringify({ ...payload, planId }), ok: true, cluster };
+    }
+    const text = blast ? formatBlast(blast) : "";
+    return {
+      output: text ? `${formatPlan(planned2)}
+${text}` : formatPlan(planned2),
+      ok: true,
+      cluster
+    };
   }
   if (meta === "ask") {
     const asJson = /(^|\s)--json(\s|$)/.test(trimmed);
@@ -3207,78 +4343,90 @@ function runUserLine(line, cluster, host2, options = {}) {
   }
   const view = toEngine(trimmed, trimmed.length, "repl");
   const planned = planCommand(view.line, cluster);
-  if (planned.risk === "high" && !host2.yes) {
-    process.stderr.write(`${formatPlan(planned)}
+  const started = Date.now();
+  const rule = ruleFor(host2.policy ?? null, cluster.current);
+  const argv = commandArgs(view.line, cluster);
+  const actor = host2.agent ? "agent-cli" : process.stdin.isTTY ? "human-tty" : "human-cli";
+  const writeAudit = (decision, approver2, exitCode) => {
+    if (!auditEnabled(host2.policy ?? null)) return;
+    appendAudit({
+      id: newAuditId(),
+      timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+      actor,
+      context: planned.context,
+      namespace: planned.namespace,
+      argv: redactArgv(argv),
+      risk: planned.risk,
+      decision,
+      approver: approver2,
+      exitCode,
+      durationMs: Date.now() - started
+    });
+  };
+  if (rule.deny.includes(planned.verb)) {
+    writeAudit("denied-policy", "none", null);
+    return { output: `refused: ${planned.verb} is denied by policy`, ok: false, cluster };
+  }
+  if (host2.agent && host2.policy?.agents && planned.risk === "read" && !host2.policy.agents.allow.includes(planned.verb)) {
+    writeAudit("denied-policy", "none", null);
+    return { output: `refused: ${planned.verb} is not allowed for agents`, ok: false, cluster };
+  }
+  const needsPlan = host2.agent === true && host2.policy?.agents?.writeRequires === "approved-plan" && planned.mutating;
+  if (needsPlan) {
+    if (!host2.planId) {
+      writeAudit("denied-policy", "none", null);
+      return {
+        output: "refused: agent writes need --plan-id from plan --json",
+        ok: false,
+        cluster
+      };
+    }
+    const consumed = consumePlan(host2.planId, {
+      context: planned.context,
+      namespace: planned.namespace,
+      argv
+    });
+    if (!consumed.ok) {
+      writeAudit("denied-policy", "none", null);
+      return { output: `refused: ${consumed.reason}`, ok: false, cluster };
+    }
+  } else if (rule.confirm === "typed" && host2.yes && host2.confirmContext !== cluster.current) {
+    writeAudit("refused-confirm", "none", null);
+    return {
+      output: `refused: pass --confirm-context ${cluster.current}`,
+      ok: false,
+      cluster
+    };
+  } else if ((planned.risk === "high" || rule.mode === "guarded" && planned.risk === "low") && !host2.yes) {
+    const extra = wantsBlast(planned) ? formatBlast(liveBlast(planned, view.line, cluster)) : "";
+    process.stderr.write(`${formatPlan(planned)}${extra ? `
+${extra}` : ""}
 `);
-    if (!host2.confirm("Run it? [y/N] ")) return { output: "not run", ok: false, cluster };
+    if (!host2.confirm("Run it? [y/N] ")) {
+      writeAudit("refused-confirm", "none", null);
+      return { output: "not run", ok: false, cluster };
+    }
   }
-  const code = runLive(kubectlArgs(view.line), { inheritStdin: options.inheritStdin });
+  const approver = needsPlan ? `plan-id:${host2.planId}` : rule.confirm === "typed" && host2.yes ? "typed-context" : host2.yes ? "flag-yes" : "prompt-y";
+  const code = runLive(argv, { inheritStdin: options.inheritStdin });
+  const dryRun2 = argv.some((token) => token === "--dry-run" || token.startsWith("--dry-run="));
+  writeAudit(dryRun2 ? "dry-run" : "executed", approver, code);
   return { output: "", ok: code === 0, cluster: applyLiveContext(cluster) };
-}
-
-// cli/redact.ts
-var PAIR_FLAGS = ["--from-literal", "--from-file"];
-var VALUE_FLAGS = ["--docker-password", "--password", "--token", "--client-secret"];
-var SENSITIVE_KEY = /^(password|token|secret|apikey|api-key|client-secret|client_secret)$/i;
-function hidePair(value) {
-  const eq = value.indexOf("=");
-  if (eq < 0) return "***";
-  return `${value.slice(0, eq)}=***`;
-}
-function matchFlag(token, flags) {
-  return flags.find((flag) => token === flag || token.startsWith(`${flag}=`));
-}
-function redactAssignment(token) {
-  const eq = token.indexOf("=");
-  if (eq < 0) return token;
-  const key = token.slice(0, eq);
-  if (SENSITIVE_KEY.test(key)) return `${key}=***`;
-  return token;
-}
-function redactLine(line) {
-  const tokens = line.split(" ");
-  const out = [];
-  for (let i = 0; i < tokens.length; i += 1) {
-    const token = tokens[i] ?? "";
-    const pair = matchFlag(token, PAIR_FLAGS);
-    if (pair) {
-      if (token === pair) {
-        out.push(token);
-        const next = tokens[i + 1];
-        if (next !== void 0) {
-          out.push(hidePair(next));
-          i += 1;
-        }
-      } else {
-        out.push(`${pair}=${hidePair(token.slice(pair.length + 1))}`);
-      }
-      continue;
-    }
-    const valueFlag = matchFlag(token, VALUE_FLAGS);
-    if (valueFlag) {
-      if (token === valueFlag) {
-        out.push(token);
-        if (tokens[i + 1] !== void 0) {
-          out.push("***");
-          i += 1;
-        }
-      } else {
-        out.push(`${valueFlag}=***`);
-      }
-      continue;
-    }
-    out.push(redactAssignment(token));
-  }
-  return out.join(" ");
 }
 
 // cli/main.ts
 var VERSION = true ? "0.5.1" : "0.0.0-dev";
-var HISTORY = import_node_path4.default.join(stateDir(), "history");
-var session = { yes: false };
+var HISTORY = import_node_path8.default.join(stateDir(), "history");
+var session = {
+  yes: false,
+  agent: false,
+  policy: null,
+  typed: false,
+  contextName: ""
+};
 function loadHistory() {
   try {
-    return import_node_fs5.default.readFileSync(HISTORY, "utf8").split("\n").map((line) => line.trimEnd()).filter(Boolean).slice(-200).reverse();
+    return import_node_fs9.default.readFileSync(HISTORY, "utf8").split("\n").map((line) => line.trimEnd()).filter(Boolean).slice(-200).reverse();
   } catch {
     return [];
   }
@@ -3286,20 +4434,20 @@ function loadHistory() {
 var HISTORY_LIMIT = 200;
 function trimHistoryFile() {
   try {
-    const lines = import_node_fs5.default.readFileSync(HISTORY, "utf8").split("\n").filter(Boolean);
+    const lines = import_node_fs9.default.readFileSync(HISTORY, "utf8").split("\n").filter(Boolean);
     if (lines.length <= HISTORY_LIMIT) return;
     writePrivate(HISTORY, `${lines.slice(-HISTORY_LIMIT).join("\n")}
 `);
   } catch {
   }
 }
-function remember(line) {
+function remember2(line) {
   try {
     const trimmed = redactLine(line.trim());
     if (!trimmed) return;
-    if (!import_node_fs5.default.existsSync(HISTORY)) writePrivate(HISTORY, "");
-    else import_node_fs5.default.chmodSync(HISTORY, 384);
-    import_node_fs5.default.appendFileSync(HISTORY, `${trimmed}
+    if (!import_node_fs9.default.existsSync(HISTORY)) writePrivate(HISTORY, "");
+    else import_node_fs9.default.chmodSync(HISTORY, 384);
+    import_node_fs9.default.appendFileSync(HISTORY, `${trimmed}
 `);
     trimHistoryFile();
   } catch {
@@ -3339,9 +4487,36 @@ function suggest(line, cursor, mode, fallback) {
     cluster
   };
 }
+function readOneLine(fd) {
+  let text = "";
+  const buf = Buffer.alloc(1);
+  try {
+    for (; ; ) {
+      const n = import_node_fs9.default.readSync(fd, buf);
+      if (n <= 0) break;
+      const char = buf.toString("utf8", 0, n);
+      text += char;
+      if (char === "\n" || char === "\r") break;
+    }
+  } catch {
+    return text;
+  }
+  return text;
+}
 function confirm(prompt) {
-  if (!process.stdin.isTTY || session.yes) return session.yes;
+  if (session.yes) return true;
+  if (session.typed) {
+    process.stderr.write(`Type ${session.contextName} to run it: `);
+    if (!process.stdin.isTTY) return readOneLine(0).trim() === session.contextName;
+    const input2 = openPromptInput();
+    try {
+      return readOneLine(input2.fd).trim() === session.contextName;
+    } finally {
+      input2.close();
+    }
+  }
   process.stderr.write(prompt);
+  if (!process.stdin.isTTY) return false;
   const input = openPromptInput();
   try {
     return readConfirm(input.fd, readSyncRetry, (text) => process.stderr.write(text));
@@ -3350,7 +4525,21 @@ function confirm(prompt) {
   }
 }
 function host() {
-  return { yes: session.yes, help: cliHelp(), version: VERSION, confirm };
+  return {
+    yes: session.yes,
+    help: cliHelp(),
+    version: VERSION,
+    confirm,
+    agent: session.agent,
+    planId: session.planId,
+    confirmContext: session.confirmContext,
+    policy: session.policy
+  };
+}
+function armSession(cluster) {
+  const rule = ruleFor(session.policy, cluster.current);
+  session.typed = rule.confirm === "typed";
+  session.contextName = cluster.current;
 }
 function writeResult(result) {
   if (!result.output) return;
@@ -3408,6 +4597,7 @@ ${body}\r
   rl.cursor = next.cursor;
 }
 function startRepl(clusterIn) {
+  armSession(clusterIn);
   process.on("SIGINT", () => {
   });
   let cluster = clusterIn;
@@ -3437,7 +4627,10 @@ function startRepl(clusterIn) {
     }
   );
   const prompt = () => {
-    rl.setPrompt(`${promptOf(cluster)}$ `);
+    const guarded = ruleFor(session.policy, cluster.current).mode === "guarded";
+    const label = promptLabel(guarded, `${promptOf(cluster)}$ `);
+    const shown = guarded && label.startsWith("[GUARDED] ") ? `\x1B[31m[GUARDED]\x1B[0m${label.slice("[GUARDED]".length)}` : label;
+    rl.setPrompt(shown);
   };
   process.stdout.write(
     `kube  live cluster ${promptOf(cluster)}. Tab completes real names. \`help\` lists commands.
@@ -3446,9 +4639,10 @@ function startRepl(clusterIn) {
   prompt();
   rl.prompt();
   rl.on("line", (input) => {
-    remember(input);
+    remember2(input);
     rl.pause();
     if (process.stdin.isTTY) process.stdin.setRawMode(false);
+    armSession(cluster);
     const result = runUserLine(input, cluster, host());
     if (process.stdin.isTTY) process.stdin.setRawMode(true);
     rl.resume();
@@ -3500,23 +4694,17 @@ function boot() {
   return cluster;
 }
 function takeFlags(argv) {
-  let yes = false;
-  const rest = [];
-  for (const arg of argv) {
-    if (rest.length === 0 && arg === "--sample") {
-      process.stderr.write(
-        "sample mode was removed. kube only runs against a reachable cluster.\n"
-      );
-      process.exit(1);
-    }
-    if (rest.length === 0 && arg === "--live") continue;
-    if (rest.length === 0 && (arg === "--yes" || arg === "-y")) {
-      yes = true;
-      continue;
-    }
-    rest.push(arg);
+  const parsed = leadingFlags(argv);
+  if (parsed.sample) {
+    process.stderr.write("sample mode was removed. kube only runs against a reachable cluster.\n");
+    process.exit(1);
   }
-  return { yes, rest };
+  if (parsed.error) {
+    process.stderr.write(`${parsed.error}
+`);
+    process.exit(1);
+  }
+  return parsed;
 }
 function blankCluster() {
   return {
@@ -3551,12 +4739,29 @@ function main() {
     printComplete(line2, Number.isFinite(cursor) ? cursor : line2.length, cluster2, asJson);
     return;
   }
-  const { yes, rest } = takeFlags(argv);
+  const flags = takeFlags(argv);
+  const { yes, rest } = flags;
   if (yes && !allowYes(yes, rest.length, process.stdin.isTTY === true)) {
     process.stderr.write("`--yes` applies to one command, not the shell.\n");
     process.exit(1);
   }
   session.yes = yes;
+  session.agent = process.env.KUBE_SHELL_AGENT === "1";
+  session.planId = flags.planId;
+  session.confirmContext = flags.confirmContext;
+  const loaded = readPolicy(
+    policyFile({
+      agent: session.agent,
+      flag: session.agent ? void 0 : flags.policy,
+      envPath: session.agent ? void 0 : process.env.KUBE_SHELL_POLICY
+    })
+  );
+  if (loaded && "error" in loaded) {
+    process.stderr.write(`kube: ${loaded.error}
+`);
+    process.exit(1);
+  }
+  session.policy = loaded;
   const quoted = [];
   for (const arg of rest) {
     const next = quoteArg(arg);
@@ -3581,10 +4786,11 @@ function main() {
   if (rest.length === 0) {
     if (!process.stdin.isTTY) {
       let current = cluster;
-      const text = import_node_fs5.default.readFileSync(0, "utf8");
+      const text = import_node_fs9.default.readFileSync(0, "utf8");
       let code = 0;
       for (const line2 of text.split("\n")) {
         if (!line2.trim()) continue;
+        armSession(current);
         const result2 = runUserLine(line2, current, host());
         current = result2.cluster;
         if (result2.output !== "\x1Bc") writeResult(result2);
@@ -3597,6 +4803,7 @@ function main() {
     return;
   }
   const inheritStdin = !process.stdin.isTTY;
+  armSession(cluster);
   const result = runUserLine(line, cluster, host(), { inheritStdin });
   writeResult(result);
   process.exit(result.ok ? 0 : 1);

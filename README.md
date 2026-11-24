@@ -45,7 +45,7 @@ The bundle in `cli/kube.cjs` is committed; no build step is required to install.
 kube                    # interactive shell
 kube get pods           # one-shot
 kube view               # full-screen list (plain table without a TTY)
-kube plan delete pod x  # preview risk before running
+kube plan delete pod x  # name matching pods and Services that would lose Ready pods
 kube ask "why is checkout crashing"
 ```
 
@@ -56,6 +56,12 @@ kube ask "why is checkout crashing"
 **`kube view` keys (TTY):** `1`–`5` resource kinds, `j`/`k`, Enter describe, `l` logs (pods), `d` delete (confirmed), `/` filter, `n` namespace, `a` all namespaces, `r` refresh, `q` quit.
 
 High-risk verbs (delete, writes, `port-forward`, `run`, `expose`, pod `exec`/`cp`/…) prompt **`y`** on a TTY; use **`kube --yes`** in scripts. **`kube --yes` alone does not open a pre-confirmed shell.**
+
+`plan delete`, `plan drain`, and `plan scale --replicas=0` — and the interactive confirmation for those commands — look up matching objects with read-only `kubectl get -o json` calls. They flag Services that would lose Ready pods and PodDisruptionBudgets that allow 0 disruptions. `delete -f` reads local YAML or JSON only. `kube --yes` skips that lookup. A delete also tries `kubectl delete --dry-run=server` and still prints the object list if the API denies it.
+
+A policy file at `~/.kube-shell/policy.json` can mark a context `guarded` or `confirm: typed`, and can deny verbs. Inside the shell, `ctx` and `ns` change context and namespace for that shell only. Agents (`KUBE_SHELL_AGENT=1`) that require an approved plan use `kube plan --json`, then `kube --yes --plan-id <id>`. That id works once.
+
+`kube audit tail` prints recent redacted records from `~/.kube-shell/audit.jsonl`. `KUBE_SHELL_AUDIT=0` turns that file off unless the policy says `audit: required`.
 
 Agents: `kube plan --json …`, then `--yes` when the plan matches intent. `__complete --json` for completion without running the line.
 

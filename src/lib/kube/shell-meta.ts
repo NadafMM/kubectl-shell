@@ -2,10 +2,13 @@ export type ShellCommand = { value: string; detail: string; weight: number; alia
 
 export const SHELL_COMMANDS: ShellCommand[] = [
   { value: "view", detail: "Full-screen resource list", weight: 98, aliases: ["ui"] },
+  { value: "ctx", detail: "Switch context for this shell only", weight: 97 },
+  { value: "ns", detail: "Switch namespace for this shell only", weight: 96 },
   { value: "plan", detail: "What a command will change", weight: 92 },
   { value: "ask", detail: "Turn a question into kubectl lines", weight: 90 },
   { value: "live", detail: "Reconnect to the cluster", weight: 86 },
   { value: "reset", detail: "Refresh names from the cluster", weight: 84 },
+  { value: "audit", detail: "Show recent redacted command records", weight: 70 },
   { value: "help", detail: "List shell commands", weight: 50 },
   { value: "clear", detail: "Clear the screen", weight: 40 },
   { value: "exit", detail: "Leave the shell", weight: 30, aliases: ["quit"] },

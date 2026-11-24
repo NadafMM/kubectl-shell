@@ -3,6 +3,8 @@ import path from "node:path";
 import readline from "node:readline";
 import { complete, type Candidate } from "../src/lib/kube/complete";
 import { allowYes, readConfirm } from "./confirm";
+import { leadingFlags } from "./flags";
+import { policyFile, promptLabel, readPolicy, ruleFor, type Policy } from "./policy";
 import { spliceToken, toEngine } from "./engine";
 import { completionValue, plainText, refreshLine } from "./terminal";
 import { runUserLine, type LineResult } from "./commands";
@@ -18,8 +20,22 @@ declare const __KUBE_VERSION__: string | undefined;
 const VERSION = typeof __KUBE_VERSION__ === "string" ? __KUBE_VERSION__ : "0.0.0-dev";
 const HISTORY = path.join(stateDir(), "history");
 
-type Session = { yes: boolean };
-const session: Session = { yes: false };
+type Session = {
+  yes: boolean;
+  agent: boolean;
+  planId?: string;
+  confirmContext?: string;
+  policy: Policy | null;
+  typed: boolean;
+  contextName: string;
+};
+const session: Session = {
+  yes: false,
+  agent: false,
+  policy: null,
+  typed: false,
+  contextName: "",
+};
 
 type RL = readline.Interface & {
   line: string;
@@ -103,9 +119,37 @@ function suggest(line: string, cursor: number, mode: "repl" | "shell", fallback:
   };
 }
 
+function readOneLine(fd: number): string {
+  let text = "";
+  const buf = Buffer.alloc(1);
+  try {
+    for (;;) {
+      const n = fs.readSync(fd, buf);
+      if (n <= 0) break;
+      const char = buf.toString("utf8", 0, n);
+      text += char;
+      if (char === "\n" || char === "\r") break;
+    }
+  } catch {
+    return text;
+  }
+  return text;
+}
+
 function confirm(prompt: string): boolean {
-  if (!process.stdin.isTTY || session.yes) return session.yes;
+  if (session.yes) return true;
+  if (session.typed) {
+    process.stderr.write(`Type ${session.contextName} to run it: `);
+    if (!process.stdin.isTTY) return readOneLine(0).trim() === session.contextName;
+    const input = openPromptInput();
+    try {
+      return readOneLine(input.fd).trim() === session.contextName;
+    } finally {
+      input.close();
+    }
+  }
   process.stderr.write(prompt);
+  if (!process.stdin.isTTY) return false;
   const input = openPromptInput();
   try {
     return readConfirm(input.fd, readSyncRetry, (text) => process.stderr.write(text));
@@ -115,7 +159,22 @@ function confirm(prompt: string): boolean {
 }
 
 function host() {
-  return { yes: session.yes, help: cliHelp(), version: VERSION, confirm };
+  return {
+    yes: session.yes,
+    help: cliHelp(),
+    version: VERSION,
+    confirm,
+    agent: session.agent,
+    planId: session.planId,
+    confirmContext: session.confirmContext,
+    policy: session.policy,
+  };
+}
+
+function armSession(cluster: Cluster) {
+  const rule = ruleFor(session.policy, cluster.current);
+  session.typed = rule.confirm === "typed";
+  session.contextName = cluster.current;
 }
 
 function writeResult(result: Pick<LineResult, "output" | "ok">): void {
@@ -176,6 +235,7 @@ function fillTab(rl: RL, getCluster: () => Cluster, setCluster: (cluster: Cluste
 }
 
 function startRepl(clusterIn: Cluster) {
+  armSession(clusterIn);
   // Raw readline reads Ctrl+C as a key; this fires only while a child (also signalled) or y/N runs.
   process.on("SIGINT", () => {});
   let cluster = clusterIn;
@@ -210,7 +270,13 @@ function startRepl(clusterIn: Cluster) {
   );
 
   const prompt = () => {
-    rl.setPrompt(`${promptOf(cluster)}$ `);
+    const guarded = ruleFor(session.policy, cluster.current).mode === "guarded";
+    const label = promptLabel(guarded, `${promptOf(cluster)}$ `);
+    const shown =
+      guarded && label.startsWith("[GUARDED] ")
+        ? `\x1b[31m[GUARDED]\x1b[0m${label.slice("[GUARDED]".length)}`
+        : label;
+    rl.setPrompt(shown);
   };
   process.stdout.write(
     `kube  live cluster ${promptOf(cluster)}. Tab completes real names. \`help\` lists commands.\n`,
@@ -222,6 +288,7 @@ function startRepl(clusterIn: Cluster) {
     remember(input);
     rl.pause();
     if (process.stdin.isTTY) process.stdin.setRawMode(false);
+    armSession(cluster);
     const result = runUserLine(input, cluster, host());
     if (process.stdin.isTTY) process.stdin.setRawMode(true);
     rl.resume();
@@ -276,24 +343,17 @@ function boot(): Cluster {
   return cluster;
 }
 
-function takeFlags(argv: string[]): { yes: boolean; rest: string[] } {
-  let yes = false;
-  const rest: string[] = [];
-  for (const arg of argv) {
-    if (rest.length === 0 && arg === "--sample") {
-      process.stderr.write(
-        "sample mode was removed. kube only runs against a reachable cluster.\n",
-      );
-      process.exit(1);
-    }
-    if (rest.length === 0 && arg === "--live") continue;
-    if (rest.length === 0 && (arg === "--yes" || arg === "-y")) {
-      yes = true;
-      continue;
-    }
-    rest.push(arg);
+function takeFlags(argv: string[]) {
+  const parsed = leadingFlags(argv);
+  if (parsed.sample) {
+    process.stderr.write("sample mode was removed. kube only runs against a reachable cluster.\n");
+    process.exit(1);
   }
-  return { yes, rest };
+  if (parsed.error) {
+    process.stderr.write(`${parsed.error}\n`);
+    process.exit(1);
+  }
+  return parsed;
 }
 
 function blankCluster(): Cluster {
@@ -331,12 +391,28 @@ export function main() {
     return;
   }
 
-  const { yes, rest } = takeFlags(argv);
+  const flags = takeFlags(argv);
+  const { yes, rest } = flags;
   if (yes && !allowYes(yes, rest.length, process.stdin.isTTY === true)) {
     process.stderr.write("`--yes` applies to one command, not the shell.\n");
     process.exit(1);
   }
   session.yes = yes;
+  session.agent = process.env.KUBE_SHELL_AGENT === "1";
+  session.planId = flags.planId;
+  session.confirmContext = flags.confirmContext;
+  const loaded = readPolicy(
+    policyFile({
+      agent: session.agent,
+      flag: session.agent ? undefined : flags.policy,
+      envPath: session.agent ? undefined : process.env.KUBE_SHELL_POLICY,
+    }),
+  );
+  if (loaded && "error" in loaded) {
+    process.stderr.write(`kube: ${loaded.error}\n`);
+    process.exit(1);
+  }
+  session.policy = loaded;
   const quoted: string[] = [];
   for (const arg of rest) {
     const next = quoteArg(arg);
@@ -373,6 +449,7 @@ export function main() {
       let code = 0;
       for (const line of text.split("\n")) {
         if (!line.trim()) continue;
+        armSession(current);
         const result = runUserLine(line, current, host());
         current = result.cluster;
         if (result.output !== "\x1bc") writeResult(result);
@@ -386,6 +463,7 @@ export function main() {
   }
 
   const inheritStdin = !process.stdin.isTTY;
+  armSession(cluster);
   const result = runUserLine(line, cluster, host(), { inheritStdin });
   writeResult(result);
   process.exit(result.ok ? 0 : 1);

@@ -9,12 +9,14 @@ const root = process.cwd();
 const fake = path.join(root, "scripts", "fake-kubectl.mjs");
 const kube = path.join(root, "cli", "kube.cjs");
 
-function spawnKube(args: string[], env: Record<string, string>) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "kube-home-"));
-  const log = path.join(home, "kubectl.log");
+function spawnKube(args: string[], env: Record<string, string>, input?: string) {
+  const { KUBE_TEST_HOME, ...rest } = env;
+  const home = KUBE_TEST_HOME || fs.mkdtempSync(path.join(os.tmpdir(), "kube-home-"));
+  const log = path.join(home, `kubectl-${process.hrtime.bigint()}.log`);
   const result = spawnSync(process.execPath, [kube, ...args], {
     cwd: root,
     encoding: "utf8",
+    input,
     env: {
       ...process.env,
       HOME: home,
@@ -22,7 +24,7 @@ function spawnKube(args: string[], env: Record<string, string>) {
       KUBE_SHELL_KUBECTL: process.execPath,
       KUBE_SHELL_NODE_SCRIPT: fake,
       KUBE_FAKE_LOG: log,
-      ...env,
+      ...rest,
     },
   });
   const lines = fs.existsSync(log) ? fs.readFileSync(log, "utf8").split("\n").filter(Boolean) : [];
@@ -182,6 +184,183 @@ test("KUBE_SHELL_REDACT_STDOUT redacts piped get secret -o json", () => {
   assert.equal(result.status, 0);
   assert.match(result.stdout ?? "", /"\*\*\*"/);
   assert.doesNotMatch(result.stdout ?? "", /cGFzcw==/);
+});
+
+function isBlastGet(line: string): boolean {
+  const argv = JSON.parse(line) as string[];
+  const output = argv.indexOf("-o");
+  return argv[0] === "get" && argv.includes("--request-timeout=4s") && argv[output + 1] === "json";
+}
+
+test("piped delete prints blast before the confirmation prompt", () => {
+  const refused = spawnKube(["delete", "pod", "worker-0"], { KUBE_FAKE_FIXTURE: "up" });
+  assert.equal(refused.status, 1);
+  assert.equal(refused.stdout, "");
+  const stderr = refused.stderr ?? "";
+  const blastAt = stderr.indexOf("blast:");
+  const promptAt = stderr.indexOf("Run it? [y/N]");
+  assert.ok(blastAt >= 0 && promptAt > blastAt);
+  assert.equal(logHasDelete(refused.lines), false);
+});
+
+test("plan --json delete includes blast", () => {
+  const result = spawnKube(["plan", "--json", "delete", "pod", "worker-0"], {
+    KUBE_FAKE_FIXTURE: "up",
+  });
+  assert.equal(result.status, 0);
+  const parsed = JSON.parse(result.stdout ?? "") as {
+    risk?: string;
+    summary?: string;
+    blast?: unknown;
+  };
+  assert.equal(parsed.risk, "high");
+  assert.match(parsed.summary ?? "", /Deletes pod\/worker-0/);
+  assert.ok(parsed.blast);
+});
+
+test("--yes delete does not run blast-radius gets", () => {
+  const allowed = spawnKube(["--yes", "delete", "pod", "worker-0"], { KUBE_FAKE_FIXTURE: "up" });
+  assert.equal(logHasDelete(allowed.lines), true);
+  assert.equal(allowed.lines.some(isBlastGet), false);
+});
+
+test("plan get does not run blast-radius gets", () => {
+  const get = spawnKube(["plan", "get", "pods"], { KUBE_FAKE_FIXTURE: "up" });
+  assert.equal(get.status, 0);
+  assert.doesNotMatch(get.stdout ?? "", /blast/);
+  assert.equal(get.lines.some(isBlastGet), false);
+});
+
+test("plan drain prints a blast block", () => {
+  const drain = spawnKube(["plan", "drain", "node-1"], { KUBE_FAKE_FIXTURE: "up" });
+  assert.equal(drain.status, 0);
+  assert.match(drain.stdout ?? "", /blast/);
+  assert.equal(drain.lines.some(isBlastGet), true);
+});
+
+function writePolicy(home: string, policy: unknown) {
+  const dir = path.join(home, ".kube-shell");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "policy.json"), JSON.stringify(policy));
+}
+
+test("typed context refuses y and bare --yes", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "kube-policy-"));
+  writePolicy(home, { contexts: { minikube: { confirm: "typed" } } });
+  const env = { KUBE_FAKE_FIXTURE: "up", KUBE_TEST_HOME: home };
+  const y = spawnKube(["delete", "pod", "worker-0"], env, "y\n");
+  assert.equal(y.status, 1);
+  assert.equal(logHasDelete(y.lines), false);
+  const yes = spawnKube(["--yes", "delete", "pod", "worker-0"], env);
+  assert.equal(yes.status, 1);
+  assert.match(yes.stderr ?? "", /--confirm-context/);
+  assert.equal(logHasDelete(yes.lines), false);
+  const named = spawnKube(
+    ["--yes", "--confirm-context", "minikube", "delete", "pod", "worker-0"],
+    env,
+  );
+  assert.equal(logHasDelete(named.lines), true);
+});
+
+test("an agent plan id is single use and argv-bound", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "kube-agent-"));
+  writePolicy(home, {
+    agents: { allow: ["get", "describe", "logs", "plan"], write_requires: "approved-plan" },
+  });
+  const env = {
+    KUBE_FAKE_FIXTURE: "up",
+    KUBE_TEST_HOME: home,
+    KUBE_SHELL_AGENT: "1",
+    KUBE_SHELL_POLICY: path.join(home, "ignored.json"),
+  };
+  const bare = spawnKube(["--yes", "delete", "pod", "worker-0"], env);
+  assert.equal(bare.status, 1);
+  assert.equal(logHasDelete(bare.lines), false);
+  const planned = spawnKube(["plan", "--json", "delete", "pod", "worker-0"], env);
+  assert.equal(planned.status, 0);
+  const planId = (JSON.parse(planned.stdout ?? "") as { planId?: string }).planId ?? "";
+  assert.ok(planId);
+  const wrong = spawnKube(["--yes", "--plan-id", planId, "delete", "pod", "other"], env);
+  assert.equal(wrong.status, 1);
+  assert.equal(logHasDelete(wrong.lines), false);
+  const once = spawnKube(["--yes", "--plan-id", planId, "delete", "pod", "worker-0"], env);
+  assert.equal(logHasDelete(once.lines), true);
+  const replay = spawnKube(["--yes", "--plan-id", planId, "delete", "pod", "worker-0"], env);
+  assert.equal(replay.status, 1);
+  assert.equal(logHasDelete(replay.lines), false);
+});
+
+test("ns in the shell does not rewrite kubeconfig", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "kube-ns-"));
+  const kubeconfig = path.join(home, "kube.config");
+  fs.writeFileSync(kubeconfig, "untouched");
+  const result = spawnKube(
+    [],
+    { KUBE_FAKE_FIXTURE: "up", KUBE_TEST_HOME: home, KUBECONFIG: kubeconfig },
+    "ns payments\nget pods\n",
+  );
+  assert.equal(result.status, 0);
+  assert.equal(fs.readFileSync(kubeconfig, "utf8"), "untouched");
+  const got = result.lines.some((line) => {
+    const argv = JSON.parse(line) as string[];
+    return argv[0] === "get" && argv.includes("-n") && argv[argv.indexOf("-n") + 1] === "payments";
+  });
+  assert.equal(got, true);
+});
+
+test("a denied command is audited without an exit code", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "kube-audit-deny-"));
+  writePolicy(home, { contexts: { "mini*": { deny: ["exec"] } } });
+  const result = spawnKube(["exec", "pod/api", "--", "date"], {
+    KUBE_FAKE_FIXTURE: "up",
+    KUBE_TEST_HOME: home,
+  });
+  assert.equal(result.status, 1);
+  assert.equal(logHasVerb(result.lines, "exec"), false);
+  const audit = fs.readFileSync(path.join(home, ".kube-shell", "audit.jsonl"), "utf8");
+  const row = JSON.parse(audit.trim().split("\n").at(-1) ?? "{}") as {
+    decision?: string;
+    exitCode?: number | null;
+  };
+  assert.equal(row.decision, "denied-policy");
+  assert.equal(row.exitCode, null);
+});
+
+test("an approved plan records its plan id and redacts literals", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "kube-audit-plan-"));
+  writePolicy(home, {
+    agents: { allow: ["get", "describe", "logs", "plan"], write_requires: "approved-plan" },
+  });
+  const env = { KUBE_FAKE_FIXTURE: "up", KUBE_TEST_HOME: home, KUBE_SHELL_AGENT: "1" };
+  const planned = spawnKube(
+    ["plan", "--json", "create", "secret", "generic", "t", "--from-literal=password=secret"],
+    env,
+  );
+  const planId = (JSON.parse(planned.stdout ?? "") as { planId?: string }).planId ?? "";
+  const ran = spawnKube(
+    [
+      "--yes",
+      "--plan-id",
+      planId,
+      "create",
+      "secret",
+      "generic",
+      "t",
+      "--from-literal=password=secret",
+    ],
+    env,
+  );
+  assert.equal(ran.status, 0);
+  const audit = fs.readFileSync(path.join(home, ".kube-shell", "audit.jsonl"), "utf8");
+  assert.doesNotMatch(audit, /password=secret/);
+  assert.match(audit, /password=\*\*\*/);
+  assert.match(audit, new RegExp(`"approver":"plan-id:${planId}"`));
+});
+
+test("an unknown leading flag is an error", () => {
+  const result = spawnKube(["--nope", "get", "pods"], { KUBE_FAKE_FIXTURE: "down" });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr ?? "", /unknown flag/);
 });
 
 test("--version prints the package.json version", () => {
