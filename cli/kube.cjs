@@ -24,8 +24,8 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 
 // cli/main.ts
-var import_node_fs5 = __toESM(require("node:fs"), 1);
-var import_node_path4 = __toESM(require("node:path"), 1);
+var import_node_fs6 = __toESM(require("node:fs"), 1);
+var import_node_path5 = __toESM(require("node:path"), 1);
 var import_node_readline = __toESM(require("node:readline"), 1);
 
 // src/lib/kube/shell-meta.ts
@@ -1768,6 +1768,96 @@ complete -c kube -f -a '(__kube_complete)'
   return "";
 }
 
+// cli/manifest.ts
+var import_node_fs2 = __toESM(require("node:fs"), 1);
+var import_node_path2 = __toESM(require("node:path"), 1);
+function manifestRefs(file) {
+  let stat;
+  try {
+    stat = import_node_fs2.default.statSync(file);
+  } catch (error) {
+    const err = error;
+    return { ok: false, error: err.code ?? err.message };
+  }
+  if (stat.isDirectory()) {
+    const refs = [];
+    for (const name of import_node_fs2.default.readdirSync(file)) {
+      if (!/\.(ya?ml|json)$/i.test(name)) continue;
+      const nested = manifestRefs(import_node_path2.default.join(file, name));
+      if (!nested.ok) return nested;
+      refs.push(...nested.refs);
+    }
+    return { ok: true, refs };
+  }
+  try {
+    return { ok: true, refs: parseManifest(import_node_fs2.default.readFileSync(file, "utf8")) };
+  } catch (error) {
+    const err = error;
+    return { ok: false, error: err.code ?? err.message };
+  }
+}
+function parseManifest(text) {
+  const trimmed = text.trim();
+  if (!trimmed) return [];
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      return jsonRefs(JSON.parse(trimmed));
+    } catch {
+      return [];
+    }
+  }
+  const refs = [];
+  for (const doc of trimmed.split(/\r?\n---\r?\n/)) {
+    const ref = yamlRef(doc);
+    if (ref) refs.push(ref);
+  }
+  return refs;
+}
+function jsonRefs(value) {
+  if (Array.isArray(value)) return value.flatMap(jsonRefs);
+  if (!value || typeof value !== "object") return [];
+  const doc = value;
+  if (Array.isArray(doc.items)) return jsonRefs(doc.items);
+  if (!doc.kind || !doc.metadata?.name) return [];
+  return [{ kind: doc.kind, name: doc.metadata.name, namespace: doc.metadata.namespace }];
+}
+function yamlRef(doc) {
+  let kind = "";
+  let name = "";
+  let namespace;
+  let inMeta = false;
+  let metaIndent = 0;
+  for (const raw of doc.split(/\r?\n/)) {
+    if (!raw.trim() || raw.trimStart().startsWith("#")) continue;
+    const indent = raw.length - raw.trimStart().length;
+    const line = raw.trim();
+    if (inMeta && indent <= metaIndent) inMeta = false;
+    const match = /^([A-Za-z0-9_]+):\s*(.*)$/.exec(line);
+    if (!match) continue;
+    const key = match[1];
+    const value = strip(match[2] ?? "");
+    if (!inMeta && indent === 0 && key === "kind" && value) kind = value;
+    if (!inMeta && indent === 0 && key === "metadata") {
+      inMeta = true;
+      metaIndent = indent;
+      continue;
+    }
+    if (inMeta && indent > metaIndent) {
+      if (key === "name" && value && !name) name = value;
+      if (key === "namespace" && value && namespace === void 0) namespace = value;
+    }
+  }
+  if (!kind || !name) return null;
+  return { kind, name, namespace };
+}
+function strip(value) {
+  const cut = value.split(/\s+#/)[0]?.trim() ?? "";
+  if (cut.length >= 2 && (cut.startsWith('"') && cut.endsWith('"') || cut.startsWith("'") && cut.endsWith("'"))) {
+    return cut.slice(1, -1);
+  }
+  return cut;
+}
+
 // cli/blast.ts
 var BLAST_BUDGET_MS = 3e3;
 var subjects = /* @__PURE__ */ new WeakMap();
@@ -1816,13 +1906,34 @@ function formatOk(blast) {
         `  ${group.count} ${noun(group.kind, group.count)} in namespace ${group.namespace}${fromSuffix(blast, group.namespace, group.kind)}`
       );
     }
-    for (const object of blast.objects) lines.push(`  ${object.kind}/${object.name}`);
+    for (const object of blast.objects) lines.push(objectLine(blast, object));
     if (blast.objectCount > 20) lines.push(`  and ${blast.objectCount - 20} more`);
   }
   const multi = new Set(groups.map((group) => group.namespace)).size > 1;
   for (const service of blast.services) lines.push(serviceLine(blast, service, multi));
   if (blast.serviceNote) lines.push(`  ${blast.serviceNote}`);
+  for (const pdb of blast.pdbs ?? []) {
+    const word = pdb.disruptionsAllowed === 1 ? "disruption" : "disruptions";
+    lines.push(`  pdb/${pdb.name} allows ${pdb.disruptionsAllowed} ${word}`);
+  }
+  if (blast.pdbNote) lines.push(`  ${blast.pdbNote}`);
+  for (const hpa of blast.hpas ?? []) {
+    lines.push(
+      `  hpa/${hpa.name} keeps ${hpa.target} between ${hpa.minReplicas} and ${hpa.maxReplicas}`
+    );
+  }
+  if (blast.dryRun?.status === "ok") lines.push(`  dry-run: ${blast.dryRun.count ?? 0} objects`);
+  if (blast.dryRun?.status === "unknown") {
+    lines.push(`  dry-run: unknown (${blast.dryRun.reason ?? "failed"})`);
+  }
   return lines.join("\n");
+}
+function objectLine(blast, object) {
+  const owner = blast.owners?.find(
+    (item) => item.pod === object.name && item.namespace === object.namespace
+  );
+  const owned = owner ? ` owned by ${owner.kind}/${owner.name}` : "";
+  return `  ${object.kind}/${object.name}${owned}`;
 }
 function fromSuffix(blast, namespace, kind) {
   if (kind !== "pod" || !blast.controllers?.length) return "";
@@ -1851,12 +1962,6 @@ function formatBlast(blast) {
   if (blast.status === "skipped") return `blast: skipped (${blast.reason ?? ""})`;
   if (blast.status === "unknown") return `blast: unknown (${blast.reason ?? ""})`;
   return formatOk(blast);
-}
-function isManifest(args) {
-  return args.some((token) => {
-    const name = token.split("=", 1)[0];
-    return name === "-f" || name === "--filename" || name === "-k" || name === "--kustomize";
-  });
 }
 function itemsOf(json, expectedKind) {
   if (!json || typeof json !== "object") return null;
@@ -1990,13 +2095,13 @@ function expandControllers(items, controllers, fetch, asked, fallbackNs, partial
   const namespaces = /* @__PURE__ */ new Set();
   for (const item of items) {
     const selector = selectorOf(item);
-    if (!selector) return pack(controllers, partial, named);
+    if (!selector) return withExtras(pack(controllers, partial, named), [], fetch, asked);
     selectors.push(selector);
     namespaces.add(item.metadata?.namespace || fallbackNs);
   }
   const encoded = new Set(selectors.map(labelSelector));
   if (encoded.size !== 1 || namespaces.size > 1 && !asked.allNamespaces) {
-    return pack(controllers, partial, named);
+    return withExtras(pack(controllers, partial, named), [], fetch, asked);
   }
   const scope = asked.allNamespaces ? withContext(["-A"], asked.context) : withContext(scopeFlags([...namespaces]), asked.context);
   const result = fetchJson(fetch, jsonArgs("pods", ["-l", [...encoded][0]], scope));
@@ -2019,7 +2124,7 @@ function expandControllers(items, controllers, fetch, asked, fallbackNs, partial
     reuse: false
   });
   if (withServices.status !== "ok") return withServices;
-  return remember(withServices, subjects.get(podBase));
+  return withExtras(remember(withServices, subjects.get(podBase)), pods, fetch, asked);
 }
 function serviceNote(base, error) {
   return { ...base, services: [], serviceNote: `services unknown (${error || "failed"})` };
@@ -2091,16 +2196,260 @@ function attachServices(base, pods, fetch, fallbackNs, options) {
     }))
   };
 }
+function carry(next, prev) {
+  const subject = subjects.get(prev);
+  if (subject) subjects.set(next, subject);
+  return next;
+}
+function podBudget(pods) {
+  return pods.length > 0 && pods.length <= 200 && new Set(pods.map((pod) => pod.namespace)).size <= 5;
+}
+function withPdbs(blast, pods, fetch, asked) {
+  if (!podBudget(pods)) return blast;
+  const namespaces = [...new Set(pods.map((pod) => pod.namespace))];
+  const result = fetchJson(
+    fetch,
+    jsonArgs("pdb", [], withContext(scopeFlags(namespaces), asked.context))
+  );
+  if (result === "timeout") return carry({ ...blast, pdbNote: "pdbs unknown (timed out)" }, blast);
+  if (!result.ok)
+    return carry({ ...blast, pdbNote: `pdbs unknown (${result.error || "failed"})` }, blast);
+  const items = itemsOf(result.json, "PodDisruptionBudget");
+  if (!items) {
+    return carry(
+      { ...blast, pdbNote: "pdbs unknown (not a PodDisruptionBudget object or list)" },
+      blast
+    );
+  }
+  const pdbs = [];
+  for (const item of items) {
+    const selector = selectorOf(item);
+    const name = item.metadata?.name;
+    const ns = item.metadata?.namespace || (namespaces.length === 1 ? namespaces[0] : "");
+    const allowed = item.status?.disruptionsAllowed;
+    if (!selector || !name || !ns || typeof allowed !== "number") continue;
+    const matched = pods.some((pod) => pod.namespace === ns && labelsMatch(selector, pod.labels));
+    if (!matched) continue;
+    pdbs.push({ namespace: ns, name, disruptionsAllowed: allowed });
+  }
+  return carry({ ...blast, pdbs }, blast);
+}
+function withHpas(blast, fetch, asked) {
+  const controllers = blast.controllers ?? [];
+  if (controllers.length === 0) return blast;
+  const namespaces = [...new Set(controllers.map((item) => item.namespace))];
+  if (namespaces.length > 5) return blast;
+  const result = fetchJson(
+    fetch,
+    jsonArgs("hpa", [], withContext(scopeFlags(namespaces), asked.context))
+  );
+  if (result === "timeout" || !result.ok) return blast;
+  const items = itemsOf(result.json, "HorizontalPodAutoscaler");
+  if (!items) return blast;
+  const hpas = [];
+  for (const item of items) {
+    const ref = item.spec?.scaleTargetRef;
+    const name = item.metadata?.name;
+    if (!ref?.name || !name) continue;
+    const target = controllers.find(
+      (controller) => controller.name === ref.name && controller.kind === (ref.kind ?? "").toLowerCase()
+    );
+    if (!target) continue;
+    hpas.push({
+      namespace: item.metadata?.namespace || target.namespace,
+      name,
+      minReplicas: item.spec?.minReplicas ?? 1,
+      maxReplicas: item.spec?.maxReplicas ?? item.spec?.minReplicas ?? 1,
+      target: `${target.kind}/${target.name}`
+    });
+  }
+  if (hpas.length === 0) return blast;
+  return carry({ ...blast, hpas }, blast);
+}
+function withExtras(blast, pods, fetch, asked) {
+  return withHpas(withPdbs(blast, pods, fetch, asked), fetch, asked);
+}
+function dryRunArgs(args) {
+  const next = [...args];
+  if (!next.some((token) => token === "--dry-run" || token.startsWith("--dry-run="))) {
+    next.push("--dry-run=server");
+  }
+  if (!next.includes("-o") && !next.some((token) => token.startsWith("--output"))) {
+    next.push("-o", "json");
+  }
+  if (!next.some((token) => token === "--request-timeout" || token.startsWith("--request-timeout="))) {
+    next.push("--request-timeout=4s");
+  }
+  return next;
+}
+function countOf(json) {
+  if (!json || typeof json !== "object") return null;
+  const doc = json;
+  if (Array.isArray(doc.items)) return doc.items.length;
+  if (doc.metadata?.name) return 1;
+  return null;
+}
+function withDryRun(blast, args, fetch) {
+  if (args[0] !== "delete" || blast.status === "skipped") return blast;
+  const result = fetchJson(fetch, dryRunArgs(args));
+  if (result === "timeout") {
+    return carry({ ...blast, dryRun: { status: "unknown", reason: "timed out" } }, blast);
+  }
+  if (!result.ok) {
+    return carry(
+      { ...blast, dryRun: { status: "unknown", reason: result.error || "failed" } },
+      blast
+    );
+  }
+  const count = countOf(result.json);
+  if (count === null) {
+    return carry({ ...blast, dryRun: { status: "unknown", reason: "not a delete result" } }, blast);
+  }
+  return carry({ ...blast, dryRun: { status: "ok", count } }, blast);
+}
+function ownerOf(item, namespace, name) {
+  const owner = item.metadata?.ownerReferences?.find((ref) => ref.controller) ?? item.metadata?.ownerReferences?.[0];
+  if (!owner?.kind || !owner.name) return [];
+  return [{ namespace, pod: name, kind: owner.kind.toLowerCase(), name: owner.name }];
+}
+function fromItems(items, resource, asked, fetch, fallbackNs, reuse) {
+  const owners = [];
+  const objects = items.flatMap((item) => {
+    const name = item.metadata?.name;
+    if (!name) return [];
+    const kind = resource?.singular ?? (item.kind ?? "object").toLowerCase();
+    const namespace = item.metadata?.namespace || fallbackNs;
+    if (kind === "pod") owners.push(...ownerOf(item, namespace, name) ?? []);
+    return [{ kind, namespace, name }];
+  });
+  const singular = resource?.singular ?? (objects.every((object) => object.kind === "pod") ? "pod" : objects[0]?.kind ?? "object");
+  const partial = { kind: singular, namespace: fallbackNs };
+  if (items.length > 0 && items.every((item) => CONTROLLERS.has(item.kind ?? ""))) {
+    return expandControllers(items, objects, fetch, asked, fallbackNs, partial);
+  }
+  const base = pack(objects, partial, owners.length ? { owners } : {});
+  if (singular !== "pod" && !(!resource && objects.some((object) => object.kind === "pod"))) {
+    return base;
+  }
+  const pods = items.flatMap((item) => {
+    if (item.kind !== "Pod" && resource?.singular !== "pod") return [];
+    if (resource?.singular === "pod" || item.kind === "Pod") {
+      const pod = podRef(item, fallbackNs);
+      return pod ? [pod] : [];
+    }
+    return [];
+  });
+  const withServices = attachServices(base, pods, fetch, fallbackNs, {
+    context: asked.context,
+    reuse
+  });
+  if (withServices.status !== "ok") return withServices;
+  return withExtras(remember(withServices, subjects.get(base)), pods, fetch, asked);
+}
+function isKustomize(args) {
+  return args.some((token) => {
+    const name = token.split("=", 1)[0];
+    return name === "-k" || name === "--kustomize";
+  });
+}
+function manifestFiles(args) {
+  const files = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const token = args[i];
+    if (token === "-f" || token === "--filename") {
+      if (args[i + 1]) files.push(args[i += 1]);
+    } else if (token.startsWith("--filename=")) files.push(token.slice("--filename=".length));
+    else if (token.startsWith("-f=")) files.push(token.slice("-f=".length));
+  }
+  return files;
+}
+function isDaemon(item) {
+  return item.metadata?.ownerReferences?.some((owner) => owner.kind === "DaemonSet") === true;
+}
+function blastFiles(files, plan, asked, fetch) {
+  const fallbackNs = asked.namespace || plan.namespace;
+  const groups = /* @__PURE__ */ new Map();
+  for (const file of files) {
+    const read = manifestRefs(file);
+    if (!read.ok) return unknown(`manifest: ${read.error}`);
+    for (const ref of read.refs) {
+      const namespace = ref.namespace || fallbackNs;
+      const key = `${ref.kind.toLowerCase()}\0${namespace}`;
+      const list = groups.get(key) ?? [];
+      list.push({ ...ref, namespace });
+      groups.set(key, list);
+    }
+  }
+  if (groups.size === 0) return skipped("no name or selector");
+  const items = [];
+  for (const group of groups.values()) {
+    const token = group[0].kind.toLowerCase();
+    const resource = resolveResource(token);
+    const namespace = group[0].namespace || fallbackNs;
+    const result = fetchJson(
+      fetch,
+      jsonArgs(
+        resource?.singular ?? token,
+        group.map((ref) => ref.name),
+        withContext(["-n", namespace], asked.context)
+      )
+    );
+    if (result === "timeout")
+      return items.length ? fromItems(items, void 0, asked, fetch, fallbackNs, false) : unknown("timed out");
+    if (!result.ok) {
+      return items.length ? fromItems(items, void 0, asked, fetch, fallbackNs, false) : unknown(`kubectl get ${token}: ${result.error || "failed"}`);
+    }
+    const parsed = itemsOf(result.json, resource?.apiKind);
+    if (!parsed) {
+      return items.length ? fromItems(items, void 0, asked, fetch, fallbackNs, false) : unknown(`kubectl get ${token}: not a ${resource?.apiKind ?? "object"} object or list`);
+    }
+    items.push(...parsed);
+  }
+  return fromItems(items, void 0, asked, fetch, fallbackNs, false);
+}
+function blastDrain(args, plan, fetch, asked) {
+  const node = positionalWords(args).words[1];
+  if (!node) return skipped("no name or selector");
+  const fallbackNs = asked.namespace || plan.namespace;
+  const scope = asked.namespace && !asked.allNamespaces ? ["-n", asked.namespace] : ["-A"];
+  const result = fetchJson(
+    fetch,
+    jsonArgs(
+      "pods",
+      ["--field-selector", `spec.nodeName=${node}`],
+      withContext(scope, asked.context)
+    )
+  );
+  if (result === "timeout") return unknown("timed out");
+  if (!result.ok) return unknown(`kubectl get pods: ${result.error || "failed"}`);
+  const parsed = itemsOf(result.json, "Pod");
+  if (!parsed) return unknown("kubectl get pods: not a Pod object or list");
+  return fromItems(
+    parsed.filter((item) => !isDaemon(item)),
+    resolveResource("pod"),
+    asked,
+    fetch,
+    fallbackNs,
+    false
+  );
+}
 function blastRadius(plan, args, getJson, clock) {
   const now = clock?.now ?? Date.now;
   const started = now();
-  if (plan.verb !== "delete") return skipped("not a delete");
-  if (isManifest(args)) return skipped("manifest delete (-f/-k) is expanded in Phase 2");
+  const fetch = { getJson, now, started };
+  const asked = askedOf(args);
+  const scaleZero = plan.verb === "scale" && flagValue(args, ["--replicas"]) === "0";
+  if (plan.verb === "drain") return blastDrain(args, plan, fetch, asked);
+  if (plan.verb !== "delete" && !scaleZero) return skipped("not a delete");
+  if (isKustomize(args)) return skipped("kustomize delete (-k) is not expanded");
+  const files = manifestFiles(args);
+  if (files.some((file) => /^https?:\/\//i.test(file))) {
+    return skipped("remote manifest URLs are not expanded");
+  }
+  if (files.length > 0) return withDryRun(blastFiles(files, plan, asked, fetch), args, fetch);
   const target = targetOf(args);
   if (target === "mixed") return skipped("mixed resource kinds");
   if (!target) return skipped("no name or selector");
-  const asked = askedOf(args);
-  const fetch = { getJson, now, started };
   const middle = target.selector ? ["-l", target.selector] : target.all ? [] : target.names;
   const result = fetchJson(fetch, jsonArgs(target.token, middle, askedFlags(asked)));
   if (result === "timeout") return unknown("timed out");
@@ -2110,36 +2459,15 @@ function blastRadius(plan, args, getJson, clock) {
     const kind = target.resource?.apiKind ?? "object";
     return unknown(`kubectl get ${target.token}: not a ${kind} object or list`);
   }
-  const fallbackNs = asked.namespace || plan.namespace;
-  const objects = items.flatMap((item) => {
-    const name = item.metadata?.name;
-    if (!name) return [];
-    const kind = target.resource?.singular ?? (item.kind ?? "object").toLowerCase();
-    return [{ kind, namespace: item.metadata?.namespace || fallbackNs, name }];
-  });
-  const singular = target.resource?.singular ?? (objects.every((object) => object.kind === "pod") ? "pod" : objects[0]?.kind ?? "object");
-  const partial = { kind: singular, namespace: fallbackNs };
-  if (items.length > 0 && items.every((item) => CONTROLLERS.has(item.kind ?? ""))) {
-    return expandControllers(items, objects, fetch, asked, fallbackNs, partial);
-  }
-  const base = pack(objects, partial);
-  if (singular !== "pod" && !(!target.resource && objects.some((object) => object.kind === "pod"))) {
-    return base;
-  }
-  const pods = items.flatMap((item) => {
-    if (item.kind !== "Pod" && target.resource?.singular !== "pod") return [];
-    if (target.resource?.singular === "pod" || item.kind === "Pod") {
-      const pod = podRef(item, fallbackNs);
-      return pod ? [pod] : [];
-    }
-    return [];
-  });
-  const withServices = attachServices(base, pods, fetch, fallbackNs, {
-    context: asked.context,
-    reuse: target.all
-  });
-  if (withServices.status !== "ok") return withServices;
-  return remember(withServices, subjects.get(base));
+  const finished = fromItems(
+    items,
+    target.resource,
+    asked,
+    fetch,
+    asked.namespace || plan.namespace,
+    target.all && (target.resource?.singular === "pod" || target.token === "pods" || target.token === "pod")
+  );
+  return withDryRun(finished, args, fetch);
 }
 
 // cli/reveal-output.ts
@@ -2426,25 +2754,25 @@ function formatAdvice(advice) {
 
 // cli/live.ts
 var import_node_child_process = require("node:child_process");
-var import_node_fs3 = __toESM(require("node:fs"), 1);
-var import_node_path3 = __toESM(require("node:path"), 1);
+var import_node_fs4 = __toESM(require("node:fs"), 1);
+var import_node_path4 = __toESM(require("node:path"), 1);
 
 // cli/private.ts
-var import_node_fs2 = __toESM(require("node:fs"), 1);
+var import_node_fs3 = __toESM(require("node:fs"), 1);
 var import_node_os = __toESM(require("node:os"), 1);
-var import_node_path2 = __toESM(require("node:path"), 1);
+var import_node_path3 = __toESM(require("node:path"), 1);
 function stateDir() {
-  return import_node_path2.default.join(import_node_os.default.homedir(), ".kube-shell");
+  return import_node_path3.default.join(import_node_os.default.homedir(), ".kube-shell");
 }
 function writePrivate(file, data) {
-  const dir = import_node_path2.default.dirname(file);
-  import_node_fs2.default.mkdirSync(dir, { recursive: true, mode: 448 });
-  import_node_fs2.default.chmodSync(dir, 448);
+  const dir = import_node_path3.default.dirname(file);
+  import_node_fs3.default.mkdirSync(dir, { recursive: true, mode: 448 });
+  import_node_fs3.default.chmodSync(dir, 448);
   const tmp = `${file}.${process.pid}.tmp`;
-  import_node_fs2.default.writeFileSync(tmp, data, { mode: 384 });
-  import_node_fs2.default.chmodSync(tmp, 384);
-  import_node_fs2.default.renameSync(tmp, file);
-  import_node_fs2.default.chmodSync(file, 384);
+  import_node_fs3.default.writeFileSync(tmp, data, { mode: 384 });
+  import_node_fs3.default.chmodSync(tmp, 384);
+  import_node_fs3.default.renameSync(tmp, file);
+  import_node_fs3.default.chmodSync(file, 384);
 }
 function tryWritePrivate(file, data) {
   try {
@@ -2549,7 +2877,7 @@ function redactKubectlStdout(args, stdout) {
 // cli/live.ts
 var TTL_MS = 12e3;
 function cachePath() {
-  return import_node_path3.default.join(stateDir(), "live.json");
+  return import_node_path4.default.join(stateDir(), "live.json");
 }
 var KIND = {
   Pod: "pod",
@@ -2607,7 +2935,7 @@ function readCache(key) {
   const now = Date.now();
   if (memory && memory.key === key && now - memory.at < TTL_MS) return memory.cluster;
   try {
-    const parsed = JSON.parse(import_node_fs3.default.readFileSync(cachePath(), "utf8"));
+    const parsed = JSON.parse(import_node_fs4.default.readFileSync(cachePath(), "utf8"));
     if (parsed.key === key && now - parsed.at < TTL_MS && parsed.cluster?.objects) {
       memory = parsed;
       return parsed.cluster;
@@ -2625,7 +2953,7 @@ function invalidateLive() {
   memory = null;
   contextMemory = null;
   try {
-    import_node_fs3.default.rmSync(cachePath(), { force: true });
+    import_node_fs4.default.rmSync(cachePath(), { force: true });
   } catch {
   }
 }
@@ -3012,9 +3340,9 @@ function runLive(args, options = {}) {
 }
 
 // cli/tty.ts
-var import_node_fs4 = __toESM(require("node:fs"), 1);
+var import_node_fs5 = __toESM(require("node:fs"), 1);
 var RETRY = /* @__PURE__ */ new Set(["EAGAIN", "EWOULDBLOCK", "EINTR"]);
-function openPromptInput(platform = process.platform, open = (file) => import_node_fs4.default.openSync(file, "r")) {
+function openPromptInput(platform = process.platform, open = (file) => import_node_fs5.default.openSync(file, "r")) {
   const stdin = { fd: 0, close: () => {
   } };
   if (platform === "win32") return stdin;
@@ -3024,9 +3352,9 @@ function openPromptInput(platform = process.platform, open = (file) => import_no
   } catch {
     return stdin;
   }
-  return { fd, close: () => import_node_fs4.default.closeSync(fd) };
+  return { fd, close: () => import_node_fs5.default.closeSync(fd) };
 }
-function readSyncRetry(fd, buf, read = (f, b) => import_node_fs4.default.readSync(f, b, 0, b.length, null), sleep = sleepMs) {
+function readSyncRetry(fd, buf, read = (f, b) => import_node_fs5.default.readSync(f, b, 0, b.length, null), sleep = sleepMs) {
   for (; ; ) {
     try {
       return read(fd, buf);
@@ -3532,6 +3860,9 @@ function openView(clusterIn, options) {
 }
 
 // cli/commands.ts
+function wantsBlast(plan) {
+  return plan.verb === "delete" || plan.verb === "drain" || plan.verb === "scale" && plan.risk === "high";
+}
 function liveBlast(plan, engineLine) {
   const started = Date.now();
   const now = () => Date.now();
@@ -3600,7 +3931,7 @@ function runUserLine(line, cluster, host2, options = {}) {
     if (!body) return { output: "usage: kube plan [--json] delete pod <name>", ok: false, cluster };
     const view2 = toEngine(body, body.length, "repl");
     const planned2 = planCommand(view2.line, cluster);
-    const blast = planned2.verb === "delete" ? liveBlast(planned2, view2.line) : void 0;
+    const blast = wantsBlast(planned2) ? liveBlast(planned2, view2.line) : void 0;
     if (asJson) {
       const payload = blast ? { ...planned2, blast } : planned2;
       return { output: JSON.stringify(payload), ok: true, cluster };
@@ -3629,7 +3960,7 @@ ${text}` : formatPlan(planned2),
   const view = toEngine(trimmed, trimmed.length, "repl");
   const planned = planCommand(view.line, cluster);
   if (planned.risk === "high" && !host2.yes) {
-    const extra = planned.verb === "delete" ? formatBlast(liveBlast(planned, view.line)) : "";
+    const extra = wantsBlast(planned) ? formatBlast(liveBlast(planned, view.line)) : "";
     process.stderr.write(`${formatPlan(planned)}${extra ? `
 ${extra}` : ""}
 `);
@@ -3697,11 +4028,11 @@ function redactLine(line) {
 
 // cli/main.ts
 var VERSION = true ? "0.5.1" : "0.0.0-dev";
-var HISTORY = import_node_path4.default.join(stateDir(), "history");
+var HISTORY = import_node_path5.default.join(stateDir(), "history");
 var session = { yes: false };
 function loadHistory() {
   try {
-    return import_node_fs5.default.readFileSync(HISTORY, "utf8").split("\n").map((line) => line.trimEnd()).filter(Boolean).slice(-200).reverse();
+    return import_node_fs6.default.readFileSync(HISTORY, "utf8").split("\n").map((line) => line.trimEnd()).filter(Boolean).slice(-200).reverse();
   } catch {
     return [];
   }
@@ -3709,7 +4040,7 @@ function loadHistory() {
 var HISTORY_LIMIT = 200;
 function trimHistoryFile() {
   try {
-    const lines = import_node_fs5.default.readFileSync(HISTORY, "utf8").split("\n").filter(Boolean);
+    const lines = import_node_fs6.default.readFileSync(HISTORY, "utf8").split("\n").filter(Boolean);
     if (lines.length <= HISTORY_LIMIT) return;
     writePrivate(HISTORY, `${lines.slice(-HISTORY_LIMIT).join("\n")}
 `);
@@ -3720,9 +4051,9 @@ function remember2(line) {
   try {
     const trimmed = redactLine(line.trim());
     if (!trimmed) return;
-    if (!import_node_fs5.default.existsSync(HISTORY)) writePrivate(HISTORY, "");
-    else import_node_fs5.default.chmodSync(HISTORY, 384);
-    import_node_fs5.default.appendFileSync(HISTORY, `${trimmed}
+    if (!import_node_fs6.default.existsSync(HISTORY)) writePrivate(HISTORY, "");
+    else import_node_fs6.default.chmodSync(HISTORY, 384);
+    import_node_fs6.default.appendFileSync(HISTORY, `${trimmed}
 `);
     trimHistoryFile();
   } catch {
@@ -4005,7 +4336,7 @@ function main() {
   if (rest.length === 0) {
     if (!process.stdin.isTTY) {
       let current = cluster;
-      const text = import_node_fs5.default.readFileSync(0, "utf8");
+      const text = import_node_fs6.default.readFileSync(0, "utf8");
       let code = 0;
       for (const line2 of text.split("\n")) {
         if (!line2.trim()) continue;

@@ -15,6 +15,14 @@ import {
 } from "./live";
 import { boardFrom, openView } from "./view";
 
+function wantsBlast(plan: Plan): boolean {
+  return (
+    plan.verb === "delete" ||
+    plan.verb === "drain" ||
+    (plan.verb === "scale" && plan.risk === "high")
+  );
+}
+
 function liveBlast(plan: Plan, engineLine: string) {
   const started = Date.now();
   const now = () => Date.now();
@@ -101,7 +109,7 @@ export function runUserLine(
     if (!body) return { output: "usage: kube plan [--json] delete pod <name>", ok: false, cluster };
     const view = toEngine(body, body.length, "repl");
     const planned = planCommand(view.line, cluster);
-    const blast = planned.verb === "delete" ? liveBlast(planned, view.line) : undefined;
+    const blast = wantsBlast(planned) ? liveBlast(planned, view.line) : undefined;
     if (asJson) {
       const payload = blast ? { ...planned, blast } : planned;
       return { output: JSON.stringify(payload), ok: true, cluster };
@@ -133,7 +141,7 @@ export function runUserLine(
   const view = toEngine(trimmed, trimmed.length, "repl");
   const planned = planCommand(view.line, cluster);
   if (planned.risk === "high" && !host.yes) {
-    const extra = planned.verb === "delete" ? formatBlast(liveBlast(planned, view.line)) : "";
+    const extra = wantsBlast(planned) ? formatBlast(liveBlast(planned, view.line)) : "";
     process.stderr.write(`${formatPlan(planned)}${extra ? `\n${extra}` : ""}\n`);
     if (!host.confirm("Run it? [y/N] ")) return { output: "not run", ok: false, cluster };
   }

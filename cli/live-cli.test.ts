@@ -222,15 +222,18 @@ test("--yes delete does not run blast-radius gets", () => {
   assert.equal(allowed.lines.some(isBlastGet), false);
 });
 
-test("plan get and plan drain do not run blast-radius gets", () => {
+test("plan get does not run blast-radius gets", () => {
   const get = spawnKube(["plan", "get", "pods"], { KUBE_FAKE_FIXTURE: "up" });
   assert.equal(get.status, 0);
   assert.doesNotMatch(get.stdout ?? "", /blast/);
   assert.equal(get.lines.some(isBlastGet), false);
+});
+
+test("plan drain prints a blast block", () => {
   const drain = spawnKube(["plan", "drain", "node-1"], { KUBE_FAKE_FIXTURE: "up" });
   assert.equal(drain.status, 0);
-  assert.doesNotMatch(drain.stdout ?? "", /blast/);
-  assert.equal(drain.lines.some(isBlastGet), false);
+  assert.match(drain.stdout ?? "", /blast/);
+  assert.equal(drain.lines.some(isBlastGet), true);
 });
 
 test("--version prints the package.json version", () => {

@@ -89,11 +89,9 @@ test("a delete with no name or selector is not expanded", () => {
   }
 });
 
-test("manifest deletes are skipped until Phase 2", () => {
+test("kustomize deletes stay skipped", () => {
   for (const args of [
-    ["delete", "-f", "app.yaml"],
     ["delete", "-k", "dir"],
-    ["delete", "--filename=app.yaml"],
     ["delete", "--kustomize=dir"],
   ]) {
     let calls = 0;
@@ -103,11 +101,8 @@ test("manifest deletes are skipped until Phase 2", () => {
       return none();
     });
     assert.equal(blast.status, "skipped", args.join(" "));
-    assert.equal(blast.reason, "manifest delete (-f/-k) is expanded in Phase 2");
-    assert.equal(
-      formatBlast(blast),
-      "blast: skipped (manifest delete (-f/-k) is expanded in Phase 2)",
-    );
+    assert.equal(blast.reason, "kustomize delete (-k) is not expanded");
+    assert.equal(formatBlast(blast), "blast: skipped (kustomize delete (-k) is not expanded)");
     assert.equal(calls, 0);
   }
 });
@@ -144,7 +139,7 @@ test("a configmap delete reports the object and does not look up services", () =
   assert.equal(blast.objectCount, 1);
   assert.deepEqual(blast.objects, [{ kind: "configmap", namespace: "default", name: "app" }]);
   assert.deepEqual(blast.services, []);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.filter((call) => call[0] === "get").length, 1);
   const text = formatBlast(blast);
   assert.match(text, /1 configmap/);
   assert.match(text, /configmap\/app/);
@@ -195,6 +190,10 @@ function routePods(
   const calls: string[][] = [];
   const getJson: GetJson = (args) => {
     calls.push(args);
+    if (args[0] === "delete") return { ok: true, json: target, error: "" };
+    if (args[1] === "pdb" || args[1] === "hpa") {
+      return { ok: true, json: { kind: "List", items: [] }, error: "" };
+    }
     if (args[1] === "services") return { ok: true, json: services, error: "" };
     if (args[1] === "pods") {
       if (isResult(namespacePods)) return namespacePods;
@@ -214,7 +213,13 @@ test("deleting the only Ready pod behind a Service leaves zero ready pods", () =
   );
   const plan = planCommand("kubectl delete pod checkout-abc", initialCluster());
   const blast = blastRadius(plan, ["delete", "pod", "checkout-abc"], getJson);
-  assert.deepEqual(calls, [podGet, serviceGet, namespacePodsGet]);
+  assert.deepEqual(calls, [
+    podGet,
+    serviceGet,
+    namespacePodsGet,
+    ["get", "pdb", "-n", "default", "-o", "json", "--request-timeout=4s"],
+    ["delete", "pod", "checkout-abc", "--dry-run=server", "-o", "json", "--request-timeout=4s"],
+  ]);
   assert.equal(blast.status, "ok");
   assert.deepEqual(blast.services, [
     { namespace: "default", name: "checkout", matchedPods: 1, readyPodsRemaining: 0 },
@@ -366,7 +371,7 @@ test("delete pods --all reuses that list and leaves zero ready pods", () => {
     }
     return { ok: true, json: { kind: "PodList", items: [first, second] }, error: "" };
   });
-  assert.equal(calls.length, 2);
+  assert.equal(calls.filter((call) => call[0] === "get" && call[1] === "pods").length, 1);
   assert.deepEqual(calls[0], ["get", "pods", "-o", "json", "--request-timeout=4s"]);
   assert.equal(blast.services[0]?.readyPodsRemaining, 0);
   assert.match(formatBlast(blast), /would have 0 ready pods/);
@@ -418,7 +423,7 @@ test("an empty pod list is zero pods, not unknown", () => {
   assert.equal(blast.objectCount, 0);
   assert.match(formatBlast(blast), /0 pods/);
   assert.doesNotMatch(formatBlast(blast), /unknown/);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.filter((call) => call[0] === "get").length, 1);
 });
 
 test("services are matched inside each namespace", () => {
@@ -531,7 +536,10 @@ test("matchExpressions skips pod and service lookups", () => {
       error: "",
     };
   });
-  assert.equal(calls.length, 1);
+  assert.equal(
+    calls.some((call) => call[1] === "pods"),
+    false,
+  );
   assert.equal(blast.objectCount, 1);
   assert.deepEqual(blast.services, []);
   const text = formatBlast(blast);
@@ -553,7 +561,10 @@ test("deployments with different matchLabels are not expanded", () => {
       error: "",
     };
   });
-  assert.equal(calls.length, 1);
+  assert.equal(
+    calls.some((call) => call[1] === "pods"),
+    false,
+  );
   assert.equal(blast.objectCount, 2);
   assert.deepEqual(blast.services, []);
   assert.equal(
@@ -638,7 +649,7 @@ test("more than five namespaces skips the service check", () => {
     };
   });
   assert.equal(blast.serviceNote, "service check skipped (6 namespaces exceeds 5)");
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
 });
 
 test("a get that overruns the shared budget is timed out", () => {
@@ -763,4 +774,182 @@ test("equals-form namespace and all-namespace flags are forwarded", () => {
     };
   });
   assert.equal(wide[0]?.includes("-A"), true);
+});
+
+test("delete -f expands every local object and keeps mixed slash kinds skipped", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kube-manifest-"));
+  const file = path.join(dir, "app.yaml");
+  fs.writeFileSync(
+    file,
+    [
+      "kind: Pod",
+      "metadata:",
+      "  name: checkout-abc",
+      "  namespace: default",
+      "---",
+      "kind: Service",
+      "metadata:",
+      "  name: checkout",
+      "  namespace: default",
+      "",
+    ].join("\n"),
+  );
+  const calls: string[][] = [];
+  const plan = planCommand(`kubectl delete -f ${file}`, initialCluster());
+  const blast = blastRadius(plan, ["delete", "-f", file], (args) => {
+    calls.push(args);
+    if (args[1] === "service" || args[1] === "services") {
+      return {
+        ok: true,
+        json: {
+          kind: "Service",
+          metadata: { name: "checkout", namespace: "default" },
+          spec: { selector: { app: "checkout" } },
+        },
+        error: "",
+      };
+    }
+    return {
+      ok: true,
+      json: podJson("checkout-abc", { app: "checkout" }, true),
+      error: "",
+    };
+  });
+  assert.equal(blast.status, "ok");
+  assert.deepEqual(blast.objects.map((item) => item.kind).sort(), ["pod", "service"]);
+  assert.ok(calls.some((call) => call[1] === "pod" || call[1] === "pods"));
+  const mixed = blastRadius(
+    planCommand("kubectl delete pod/a deploy/b", initialCluster()),
+    ["delete", "pod/a", "deploy/b"],
+    none,
+  );
+  assert.equal(mixed.status, "skipped");
+  assert.equal(mixed.reason, "mixed resource kinds");
+});
+
+test("a remote manifest url and kustomize stay skipped", () => {
+  for (const args of [
+    ["delete", "-f", "https://example.com/app.yaml"],
+    ["delete", "-k", "dir"],
+    ["delete", "--kustomize=dir"],
+  ]) {
+    let calls = 0;
+    const blast = blastRadius(
+      planCommand(`kubectl ${args.join(" ")}`, initialCluster()),
+      args,
+      () => {
+        calls += 1;
+        return none();
+      },
+    );
+    assert.equal(blast.status, "skipped", args.join(" "));
+    assert.equal(calls, 0);
+  }
+});
+
+test("scale to zero names the Service that would lose its Ready pods", () => {
+  const pods = [podJson("p1", { app: "checkout" }, true), podJson("p2", { app: "checkout" }, true)];
+  const plan = planCommand("kubectl scale deploy checkout --replicas=0", initialCluster());
+  const blast = blastRadius(plan, ["scale", "deploy", "checkout", "--replicas=0"], (args) => {
+    if (args[1] === "hpa") {
+      return {
+        ok: true,
+        json: {
+          kind: "HorizontalPodAutoscaler",
+          metadata: { name: "checkout", namespace: "default" },
+          spec: {
+            minReplicas: 2,
+            maxReplicas: 10,
+            scaleTargetRef: { kind: "Deployment", name: "checkout" },
+          },
+        },
+        error: "",
+      };
+    }
+    if (args[1] === "services") {
+      return {
+        ok: true,
+        json: { kind: "ServiceList", items: [serviceJson("checkout", { app: "checkout" })] },
+        error: "",
+      };
+    }
+    if (args[1] === "pods" && args.includes("-l")) {
+      return { ok: true, json: { kind: "PodList", items: pods }, error: "" };
+    }
+    if (args[1] === "pods") return { ok: true, json: { kind: "PodList", items: pods }, error: "" };
+    if (args[1] === "pdb")
+      return { ok: true, json: { kind: "PodDisruptionBudgetList", items: [] }, error: "" };
+    return { ok: true, json: deploymentJson("checkout", { app: "checkout" }), error: "" };
+  });
+  assert.match(formatBlast(blast), /service\/checkout matches all 2 and would have 0 ready pods/);
+  assert.match(formatBlast(blast), /hpa\/checkout keeps deployment\/checkout between 2 and 10/);
+});
+
+test("drain names evicted pods and a PDB that allows 0 disruptions", () => {
+  const evicted = {
+    ...podJson("api", { app: "web" }, true),
+    metadata: {
+      name: "api",
+      namespace: "default",
+      labels: { app: "web" },
+      ownerReferences: [{ kind: "ReplicaSet", name: "api-5f", controller: true }],
+    },
+  };
+  const daemon = {
+    ...podJson("logger", { app: "log" }, true),
+    metadata: {
+      name: "logger",
+      namespace: "default",
+      labels: { app: "log" },
+      ownerReferences: [{ kind: "DaemonSet", name: "logger", controller: true }],
+    },
+  };
+  const plan = planCommand("kubectl drain node-1", initialCluster());
+  const blast = blastRadius(plan, ["drain", "node-1"], (args) => {
+    if (args.includes("--field-selector")) {
+      return { ok: true, json: { kind: "PodList", items: [evicted, daemon] }, error: "" };
+    }
+    if (args[1] === "pdb") {
+      return {
+        ok: true,
+        json: {
+          kind: "PodDisruptionBudget",
+          metadata: { name: "web", namespace: "default" },
+          spec: { selector: { matchLabels: { app: "web" } } },
+          status: { disruptionsAllowed: 0 },
+        },
+        error: "",
+      };
+    }
+    if (args[1] === "services") {
+      return {
+        ok: true,
+        json: { kind: "ServiceList", items: [serviceJson("web", { app: "web" })] },
+        error: "",
+      };
+    }
+    return { ok: true, json: { kind: "PodList", items: [evicted] }, error: "" };
+  });
+  const text = formatBlast(blast);
+  assert.match(text, /pod\/api/);
+  assert.match(text, /owned by replicaset\/api-5f/);
+  assert.doesNotMatch(text, /pod\/logger/);
+  assert.match(text, /pdb\/web allows 0 disruptions/);
+});
+
+test("a denied delete dry-run keeps the pod blast", () => {
+  const plan = planCommand("kubectl delete pod checkout-abc", initialCluster());
+  const blast = blastRadius(plan, ["delete", "pod", "checkout-abc"], (args) => {
+    if (args[0] === "delete") return { ok: false, json: null, error: "Forbidden" };
+    if (args[1] === "services" || args[1] === "pods" || args[1] === "pdb" || args[1] === "hpa") {
+      return { ok: true, json: { kind: "List", items: [] }, error: "" };
+    }
+    return { ok: true, json: podJson("checkout-abc", { app: "checkout" }, true), error: "" };
+  });
+  assert.equal(blast.status, "ok");
+  assert.equal(blast.objects[0]?.name, "checkout-abc");
+  assert.equal(blast.dryRun?.status, "unknown");
+  assert.match(blast.dryRun?.reason ?? "", /Forbidden/);
+  assert.match(formatBlast(blast), /pod\/checkout-abc/);
+  assert.match(formatBlast(blast), /dry-run: unknown \(Forbidden\)/);
 });
