@@ -19,6 +19,7 @@
 | **Completion sanitization**   | Terminal controls stripped; unsafe values dropped.                                                                   |
 | **`plan` warnings**           | Revealing `get secret` / `get configmap` output is called out before run.                                            |
 | **Delete blast radius**       | `plan delete`, `plan drain`, `plan scale --replicas=0`, and their confirmation prompts read objects, Services, PodDisruptionBudgets, and HPAs with `kubectl get -o json` under the caller's RBAC. `delete -f` reads local files. A delete may also call `kubectl delete --dry-run=server`. None of these writes or caches object payloads. |
+| **Policy and plan ids**       | `~/.kube-shell/policy.json` is the only policy an agent reads. Human sessions may point at another file with `--policy` or `KUBE_SHELL_POLICY`. `plan --json` writes a 5-minute single-use record under `~/.kube-shell/plans/` (`0600`). The shell `ctx` and `ns` commands do not modify `~/.kube/config`. |
 | **Optional stdout redaction** | `KUBE_SHELL_REDACT_STDOUT=1` redacts bodies on **non-TTY** stdout for those gets (pipes, not interactive terminals). |
 
 See README **Security and privacy** for user-facing detail.

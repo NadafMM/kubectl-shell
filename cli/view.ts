@@ -182,6 +182,7 @@ export type ViewOptions = {
   board: Board;
   all: boolean;
   yes: boolean;
+  typedConfirm?: boolean;
   reload: (all: boolean, ns: string) => Cluster | null;
 };
 
@@ -329,6 +330,15 @@ export function openView(clusterIn: Cluster, options: ViewOptions): Cluster {
           if (row) {
             text = lookupText(effect.type === "logs" ? "logs" : "describe", row).split("\n");
             state = { ...state, textLength: text.length, scroll: 0, mode: "text" };
+          }
+        }
+        if (effect.type === "arm-delete" || effect.type === "delete") {
+          if (options.typedConfirm) {
+            state = {
+              ...state,
+              message: "typed context: run kube delete from the shell",
+            };
+            continue;
           }
         }
         if (effect.type === "arm-delete") {

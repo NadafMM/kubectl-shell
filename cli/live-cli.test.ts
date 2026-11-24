@@ -9,12 +9,14 @@ const root = process.cwd();
 const fake = path.join(root, "scripts", "fake-kubectl.mjs");
 const kube = path.join(root, "cli", "kube.cjs");
 
-function spawnKube(args: string[], env: Record<string, string>) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "kube-home-"));
-  const log = path.join(home, "kubectl.log");
+function spawnKube(args: string[], env: Record<string, string>, input?: string) {
+  const { KUBE_TEST_HOME, ...rest } = env;
+  const home = KUBE_TEST_HOME || fs.mkdtempSync(path.join(os.tmpdir(), "kube-home-"));
+  const log = path.join(home, `kubectl-${process.hrtime.bigint()}.log`);
   const result = spawnSync(process.execPath, [kube, ...args], {
     cwd: root,
     encoding: "utf8",
+    input,
     env: {
       ...process.env,
       HOME: home,
@@ -22,7 +24,7 @@ function spawnKube(args: string[], env: Record<string, string>) {
       KUBE_SHELL_KUBECTL: process.execPath,
       KUBE_SHELL_NODE_SCRIPT: fake,
       KUBE_FAKE_LOG: log,
-      ...env,
+      ...rest,
     },
   });
   const lines = fs.existsSync(log) ? fs.readFileSync(log, "utf8").split("\n").filter(Boolean) : [];
@@ -234,6 +236,82 @@ test("plan drain prints a blast block", () => {
   assert.equal(drain.status, 0);
   assert.match(drain.stdout ?? "", /blast/);
   assert.equal(drain.lines.some(isBlastGet), true);
+});
+
+function writePolicy(home: string, policy: unknown) {
+  const dir = path.join(home, ".kube-shell");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "policy.json"), JSON.stringify(policy));
+}
+
+test("typed context refuses y and bare --yes", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "kube-policy-"));
+  writePolicy(home, { contexts: { minikube: { confirm: "typed" } } });
+  const env = { KUBE_FAKE_FIXTURE: "up", KUBE_TEST_HOME: home };
+  const y = spawnKube(["delete", "pod", "worker-0"], env, "y\n");
+  assert.equal(y.status, 1);
+  assert.equal(logHasDelete(y.lines), false);
+  const yes = spawnKube(["--yes", "delete", "pod", "worker-0"], env);
+  assert.equal(yes.status, 1);
+  assert.match(yes.stderr ?? "", /--confirm-context/);
+  assert.equal(logHasDelete(yes.lines), false);
+  const named = spawnKube(
+    ["--yes", "--confirm-context", "minikube", "delete", "pod", "worker-0"],
+    env,
+  );
+  assert.equal(logHasDelete(named.lines), true);
+});
+
+test("an agent plan id is single use and argv-bound", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "kube-agent-"));
+  writePolicy(home, {
+    agents: { allow: ["get", "describe", "logs", "plan"], write_requires: "approved-plan" },
+  });
+  const env = {
+    KUBE_FAKE_FIXTURE: "up",
+    KUBE_TEST_HOME: home,
+    KUBE_SHELL_AGENT: "1",
+    KUBE_SHELL_POLICY: path.join(home, "ignored.json"),
+  };
+  const bare = spawnKube(["--yes", "delete", "pod", "worker-0"], env);
+  assert.equal(bare.status, 1);
+  assert.equal(logHasDelete(bare.lines), false);
+  const planned = spawnKube(["plan", "--json", "delete", "pod", "worker-0"], env);
+  assert.equal(planned.status, 0);
+  const planId = (JSON.parse(planned.stdout ?? "") as { planId?: string }).planId ?? "";
+  assert.ok(planId);
+  const wrong = spawnKube(["--yes", "--plan-id", planId, "delete", "pod", "other"], env);
+  assert.equal(wrong.status, 1);
+  assert.equal(logHasDelete(wrong.lines), false);
+  const once = spawnKube(["--yes", "--plan-id", planId, "delete", "pod", "worker-0"], env);
+  assert.equal(logHasDelete(once.lines), true);
+  const replay = spawnKube(["--yes", "--plan-id", planId, "delete", "pod", "worker-0"], env);
+  assert.equal(replay.status, 1);
+  assert.equal(logHasDelete(replay.lines), false);
+});
+
+test("ns in the shell does not rewrite kubeconfig", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "kube-ns-"));
+  const kubeconfig = path.join(home, "kube.config");
+  fs.writeFileSync(kubeconfig, "untouched");
+  const result = spawnKube(
+    [],
+    { KUBE_FAKE_FIXTURE: "up", KUBE_TEST_HOME: home, KUBECONFIG: kubeconfig },
+    "ns payments\nget pods\n",
+  );
+  assert.equal(result.status, 0);
+  assert.equal(fs.readFileSync(kubeconfig, "utf8"), "untouched");
+  const got = result.lines.some((line) => {
+    const argv = JSON.parse(line) as string[];
+    return argv[0] === "get" && argv.includes("-n") && argv[argv.indexOf("-n") + 1] === "payments";
+  });
+  assert.equal(got, true);
+});
+
+test("an unknown leading flag is an error", () => {
+  const result = spawnKube(["--nope", "get", "pods"], { KUBE_FAKE_FIXTURE: "down" });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr ?? "", /unknown flag/);
 });
 
 test("--version prints the package.json version", () => {

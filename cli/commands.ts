@@ -1,5 +1,5 @@
 import { metaOf } from "../src/lib/kube/shell-meta";
-import type { Cluster } from "../src/lib/kube/model";
+import { namespaceOf, type Cluster } from "../src/lib/kube/model";
 import { completionScript } from "./completion";
 import { toEngine } from "./engine";
 import { BLAST_BUDGET_MS, blastRadius, formatBlast, type GetJson } from "./blast";
@@ -13,6 +13,8 @@ import {
   runJson,
   runLive,
 } from "./live";
+import { consumePlan, mintPlan } from "./plans";
+import { ruleFor, type Policy } from "./policy";
 import { boardFrom, openView } from "./view";
 
 function wantsBlast(plan: Plan): boolean {
@@ -23,7 +25,22 @@ function wantsBlast(plan: Plan): boolean {
   );
 }
 
-function liveBlast(plan: Plan, engineLine: string) {
+function commandArgs(engineLine: string, cluster: Cluster): string[] {
+  const args = [...kubectlArgs(engineLine)];
+  const hasNs = args.some(
+    (token) =>
+      token === "-n" ||
+      token === "--namespace" ||
+      token.startsWith("--namespace=") ||
+      token.startsWith("-n="),
+  );
+  const hasCtx = args.some((token) => token === "--context" || token.startsWith("--context="));
+  if (!hasNs) args.push("-n", namespaceOf(cluster) || "default");
+  if (!hasCtx && cluster.current) args.push("--context", cluster.current);
+  return args;
+}
+
+function liveBlast(plan: Plan, engineLine: string, cluster: Cluster) {
   const started = Date.now();
   const now = () => Date.now();
   const getJson: GetJson = (args) => {
@@ -31,7 +48,21 @@ function liveBlast(plan: Plan, engineLine: string) {
     if (left <= 0) return { ok: false, json: null, error: "timed out" };
     return runJson(args, left);
   };
-  return blastRadius(plan, kubectlArgs(engineLine), getJson, { now });
+  return blastRadius(plan, commandArgs(engineLine, cluster), getJson, { now });
+}
+
+function useNamespace(cluster: Cluster, namespace: string): Cluster {
+  return {
+    ...cluster,
+    contexts: cluster.contexts.map((item) =>
+      item.name === cluster.current ? { ...item, namespace } : item,
+    ),
+  };
+}
+
+function useContext(cluster: Cluster, name: string): Cluster | null {
+  if (!cluster.contexts.some((item) => item.name === name)) return null;
+  return { ...cluster, current: name };
 }
 
 export type LineResult = { output: string; ok: boolean; cluster: Cluster; exit?: boolean };
@@ -41,6 +72,10 @@ export type LineHost = {
   help: string;
   version: string;
   confirm: (prompt: string) => boolean;
+  agent?: boolean;
+  planId?: string;
+  confirmContext?: string;
+  policy?: Policy | null;
 };
 
 export function runUserLine(
@@ -85,14 +120,27 @@ export function runUserLine(
     if (!script) return { output: "usage: kube completion bash|zsh|fish", ok: false, cluster };
     return { output: script, ok: true, cluster };
   }
+  if (meta === "ns" || meta === "ctx") {
+    const name = trimmed.split(/\s+/).slice(1).join(" ").trim();
+    if (!name) return { output: `usage: ${meta} <name>`, ok: false, cluster };
+    if (!cluster.current) return { output: "no current context", ok: false, cluster };
+    if (meta === "ns") {
+      return { output: `namespace ${name}`, ok: true, cluster: useNamespace(cluster, name) };
+    }
+    const next = useContext(cluster, name);
+    if (!next) return { output: `no context ${name}`, ok: false, cluster };
+    return { output: `context ${name}`, ok: true, cluster: next };
+  }
   if (meta === "view" || meta === "ui") {
     const parts = trimmed.split(/\s+/).slice(1);
     const all = parts.includes("-A") || parts.includes("--all-namespaces") || parts.includes("all");
     const word = parts.find((part) => part !== "all" && !part.startsWith("-"));
+    const rule = ruleFor(host.policy ?? null, cluster.current);
     const next = openView(cluster, {
       board: boardFrom(word),
       all,
       yes: host.yes,
+      typedConfirm: rule.confirm === "typed",
       reload: (wantAll, namespace) => {
         invalidateLive();
         return liveCluster(wantAll ? "kubectl get pods -A" : `kubectl get pods -n ${namespace}`);
@@ -109,10 +157,15 @@ export function runUserLine(
     if (!body) return { output: "usage: kube plan [--json] delete pod <name>", ok: false, cluster };
     const view = toEngine(body, body.length, "repl");
     const planned = planCommand(view.line, cluster);
-    const blast = wantsBlast(planned) ? liveBlast(planned, view.line) : undefined;
+    const blast = wantsBlast(planned) ? liveBlast(planned, view.line, cluster) : undefined;
     if (asJson) {
       const payload = blast ? { ...planned, blast } : planned;
-      return { output: JSON.stringify(payload), ok: true, cluster };
+      const planId = mintPlan({
+        context: planned.context,
+        namespace: planned.namespace,
+        argv: commandArgs(view.line, cluster),
+      });
+      return { output: JSON.stringify({ ...payload, planId }), ok: true, cluster };
     }
     const text = blast ? formatBlast(blast) : "";
     return {
@@ -140,11 +193,51 @@ export function runUserLine(
   }
   const view = toEngine(trimmed, trimmed.length, "repl");
   const planned = planCommand(view.line, cluster);
-  if (planned.risk === "high" && !host.yes) {
-    const extra = wantsBlast(planned) ? formatBlast(liveBlast(planned, view.line)) : "";
+  const rule = ruleFor(host.policy ?? null, cluster.current);
+  const argv = commandArgs(view.line, cluster);
+  if (rule.deny.includes(planned.verb)) {
+    return { output: `refused: ${planned.verb} is denied by policy`, ok: false, cluster };
+  }
+  if (
+    host.agent &&
+    host.policy?.agents &&
+    planned.risk === "read" &&
+    !host.policy.agents.allow.includes(planned.verb)
+  ) {
+    return { output: `refused: ${planned.verb} is not allowed for agents`, ok: false, cluster };
+  }
+  const needsPlan =
+    host.agent === true &&
+    host.policy?.agents?.writeRequires === "approved-plan" &&
+    planned.mutating;
+  if (needsPlan) {
+    if (!host.planId) {
+      return {
+        output: "refused: agent writes need --plan-id from plan --json",
+        ok: false,
+        cluster,
+      };
+    }
+    const consumed = consumePlan(host.planId, {
+      context: planned.context,
+      namespace: planned.namespace,
+      argv,
+    });
+    if (!consumed.ok) return { output: `refused: ${consumed.reason}`, ok: false, cluster };
+  } else if (rule.confirm === "typed" && host.yes && host.confirmContext !== cluster.current) {
+    return {
+      output: `refused: pass --confirm-context ${cluster.current}`,
+      ok: false,
+      cluster,
+    };
+  } else if (
+    (planned.risk === "high" || (rule.mode === "guarded" && planned.risk === "low")) &&
+    !host.yes
+  ) {
+    const extra = wantsBlast(planned) ? formatBlast(liveBlast(planned, view.line, cluster)) : "";
     process.stderr.write(`${formatPlan(planned)}${extra ? `\n${extra}` : ""}\n`);
     if (!host.confirm("Run it? [y/N] ")) return { output: "not run", ok: false, cluster };
   }
-  const code = runLive(kubectlArgs(view.line), { inheritStdin: options.inheritStdin });
+  const code = runLive(argv, { inheritStdin: options.inheritStdin });
   return { output: "", ok: code === 0, cluster: applyLiveContext(cluster) };
 }

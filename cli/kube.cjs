@@ -24,13 +24,15 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 
 // cli/main.ts
-var import_node_fs6 = __toESM(require("node:fs"), 1);
-var import_node_path5 = __toESM(require("node:path"), 1);
+var import_node_fs8 = __toESM(require("node:fs"), 1);
+var import_node_path7 = __toESM(require("node:path"), 1);
 var import_node_readline = __toESM(require("node:readline"), 1);
 
 // src/lib/kube/shell-meta.ts
 var SHELL_COMMANDS = [
   { value: "view", detail: "Full-screen resource list", weight: 98, aliases: ["ui"] },
+  { value: "ctx", detail: "Switch context for this shell only", weight: 97 },
+  { value: "ns", detail: "Switch namespace for this shell only", weight: 96 },
   { value: "plan", detail: "What a command will change", weight: 92 },
   { value: "ask", detail: "Turn a question into kubectl lines", weight: 90 },
   { value: "live", detail: "Reconnect to the cluster", weight: 86 },
@@ -1630,6 +1632,188 @@ kube: could not read the answer (${err.code ?? err.message}); not running it.
   return readAnswer(chunks);
 }
 
+// cli/flags.ts
+var VALUE_FLAGS = /* @__PURE__ */ new Set(["--policy", "--plan-id", "--confirm-context", "--record"]);
+function leadingFlags(argv) {
+  const parsed = { yes: false, sandbox: false, sample: false, rest: [] };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (parsed.rest.length > 0) {
+      parsed.rest.push(arg);
+      continue;
+    }
+    if (arg === "--live") continue;
+    if (arg === "--help" || arg === "-h" || arg === "--version" || arg === "-v") {
+      parsed.rest.push(arg);
+      continue;
+    }
+    if (arg === "--sample") {
+      parsed.sample = true;
+      continue;
+    }
+    if (arg === "--yes" || arg === "-y") {
+      parsed.yes = true;
+      continue;
+    }
+    if (arg === "--sandbox") {
+      parsed.sandbox = true;
+      parsed.error = "kube: --sandbox is not available yet";
+      return parsed;
+    }
+    const eq = arg.indexOf("=");
+    const name = eq === -1 ? arg : arg.slice(0, eq);
+    if (VALUE_FLAGS.has(name)) {
+      const value = eq === -1 ? argv[i + 1] : arg.slice(eq + 1);
+      if (!value || eq === -1 && value.startsWith("-")) {
+        parsed.error = `kube: ${name} needs a value`;
+        return parsed;
+      }
+      if (eq === -1) i += 1;
+      if (name === "--policy") parsed.policy = value;
+      else if (name === "--plan-id") parsed.planId = value;
+      else if (name === "--confirm-context") parsed.confirmContext = value;
+      else parsed.record = value;
+      if (name === "--record") {
+        parsed.error = "kube: --record is not available yet";
+        return parsed;
+      }
+      continue;
+    }
+    if (arg.startsWith("-")) {
+      parsed.error = `unknown flag ${arg}; flags after the command belong to kubectl`;
+      return parsed;
+    }
+    parsed.rest.push(arg);
+  }
+  return parsed;
+}
+
+// cli/policy.ts
+var import_node_fs3 = __toESM(require("node:fs"), 1);
+var import_node_path3 = __toESM(require("node:path"), 1);
+
+// cli/private.ts
+var import_node_fs2 = __toESM(require("node:fs"), 1);
+var import_node_os = __toESM(require("node:os"), 1);
+var import_node_path2 = __toESM(require("node:path"), 1);
+function stateDir() {
+  return import_node_path2.default.join(import_node_os.default.homedir(), ".kube-shell");
+}
+function writePrivate(file, data) {
+  const dir = import_node_path2.default.dirname(file);
+  import_node_fs2.default.mkdirSync(dir, { recursive: true, mode: 448 });
+  import_node_fs2.default.chmodSync(dir, 448);
+  const tmp = `${file}.${process.pid}.tmp`;
+  import_node_fs2.default.writeFileSync(tmp, data, { mode: 384 });
+  import_node_fs2.default.chmodSync(tmp, 384);
+  import_node_fs2.default.renameSync(tmp, file);
+  import_node_fs2.default.chmodSync(file, 384);
+}
+function tryWritePrivate(file, data) {
+  try {
+    writePrivate(file, data);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// cli/policy.ts
+var EMPTY_RULE = { mode: "normal", confirm: "default", deny: [] };
+function parsePolicy(text) {
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return { error: "policy is not valid JSON" };
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw))
+    return { error: "policy must be an object" };
+  const doc = raw;
+  for (const key of Object.keys(doc)) {
+    if (key !== "contexts" && key !== "agents") return { error: `unknown policy field ${key}` };
+  }
+  const contexts = [];
+  if (doc.contexts !== void 0) {
+    if (!doc.contexts || typeof doc.contexts !== "object" || Array.isArray(doc.contexts)) {
+      return { error: "contexts must be an object" };
+    }
+    for (const [pattern, value] of Object.entries(doc.contexts)) {
+      const rule = contextRule(value);
+      if ("error" in rule) return rule;
+      contexts.push({ pattern, rule });
+    }
+  }
+  let agents = null;
+  if (doc.agents !== void 0) {
+    const parsed = agentRule(doc.agents);
+    if ("error" in parsed) return parsed;
+    agents = parsed;
+  }
+  return { contexts, agents };
+}
+function contextRule(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { error: "a context rule must be an object" };
+  }
+  const doc = value;
+  for (const key of Object.keys(doc)) {
+    if (key !== "mode" && key !== "confirm" && key !== "deny") {
+      return { error: `unknown context field ${key}` };
+    }
+  }
+  const mode = doc.mode === void 0 ? "normal" : doc.mode;
+  if (mode !== "normal" && mode !== "guarded") return { error: "mode must be normal or guarded" };
+  const confirm2 = doc.confirm === void 0 ? "default" : doc.confirm;
+  if (confirm2 !== "default" && confirm2 !== "typed") return { error: "confirm must be typed" };
+  const deny = doc.deny === void 0 ? [] : doc.deny;
+  if (!Array.isArray(deny) || deny.some((item) => typeof item !== "string")) {
+    return { error: "deny must be a list of verbs" };
+  }
+  return { mode, confirm: confirm2, deny };
+}
+function agentRule(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { error: "agents must be an object" };
+  }
+  const doc = value;
+  for (const key of Object.keys(doc)) {
+    if (key !== "allow" && key !== "write_requires" && key !== "match_non_tty") {
+      return { error: `unknown agents field ${key}` };
+    }
+  }
+  const allow = doc.allow === void 0 ? [] : doc.allow;
+  if (!Array.isArray(allow) || allow.some((item) => typeof item !== "string")) {
+    return { error: "agents.allow must be a list of verbs" };
+  }
+  const writeRequires = doc.write_requires === void 0 ? "none" : doc.write_requires;
+  if (writeRequires !== "none" && writeRequires !== "approved-plan") {
+    return { error: "write_requires must be approved-plan" };
+  }
+  const matchNonTty = doc.match_non_tty === void 0 ? false : doc.match_non_tty;
+  if (typeof matchNonTty !== "boolean") return { error: "match_non_tty must be true or false" };
+  return { allow, writeRequires, matchNonTty };
+}
+function ruleFor(policy, context) {
+  if (!policy) return EMPTY_RULE;
+  const exact = policy.contexts.find((item) => item.pattern === context);
+  if (exact) return exact.rule;
+  const wild = policy.contexts.filter((item) => item.pattern.endsWith("*") && context.startsWith(item.pattern.slice(0, -1))).sort((a, b) => b.pattern.length - a.pattern.length);
+  return wild[0]?.rule ?? EMPTY_RULE;
+}
+function policyFile(options) {
+  if (options.agent) return import_node_path3.default.join(stateDir(), "policy.json");
+  return options.flag || options.envPath || import_node_path3.default.join(stateDir(), "policy.json");
+}
+function readPolicy(file) {
+  if (!import_node_fs3.default.existsSync(file)) return null;
+  return parsePolicy(import_node_fs3.default.readFileSync(file, "utf8"));
+}
+function promptLabel(guarded, body) {
+  if (!guarded) return body;
+  return `[GUARDED] ${body}`;
+}
+
 // cli/engine.ts
 function toEngine(line, cursor, mode) {
   const c = Math.max(0, Math.min(cursor, line.length));
@@ -1769,28 +1953,28 @@ complete -c kube -f -a '(__kube_complete)'
 }
 
 // cli/manifest.ts
-var import_node_fs2 = __toESM(require("node:fs"), 1);
-var import_node_path2 = __toESM(require("node:path"), 1);
+var import_node_fs4 = __toESM(require("node:fs"), 1);
+var import_node_path4 = __toESM(require("node:path"), 1);
 function manifestRefs(file) {
   let stat;
   try {
-    stat = import_node_fs2.default.statSync(file);
+    stat = import_node_fs4.default.statSync(file);
   } catch (error) {
     const err = error;
     return { ok: false, error: err.code ?? err.message };
   }
   if (stat.isDirectory()) {
     const refs = [];
-    for (const name of import_node_fs2.default.readdirSync(file)) {
+    for (const name of import_node_fs4.default.readdirSync(file)) {
       if (!/\.(ya?ml|json)$/i.test(name)) continue;
-      const nested = manifestRefs(import_node_path2.default.join(file, name));
+      const nested = manifestRefs(import_node_path4.default.join(file, name));
       if (!nested.ok) return nested;
       refs.push(...nested.refs);
     }
     return { ok: true, refs };
   }
   try {
-    return { ok: true, refs: parseManifest(import_node_fs2.default.readFileSync(file, "utf8")) };
+    return { ok: true, refs: parseManifest(import_node_fs4.default.readFileSync(file, "utf8")) };
   } catch (error) {
     const err = error;
     return { ok: false, error: err.code ?? err.message };
@@ -2754,34 +2938,8 @@ function formatAdvice(advice) {
 
 // cli/live.ts
 var import_node_child_process = require("node:child_process");
-var import_node_fs4 = __toESM(require("node:fs"), 1);
-var import_node_path4 = __toESM(require("node:path"), 1);
-
-// cli/private.ts
-var import_node_fs3 = __toESM(require("node:fs"), 1);
-var import_node_os = __toESM(require("node:os"), 1);
-var import_node_path3 = __toESM(require("node:path"), 1);
-function stateDir() {
-  return import_node_path3.default.join(import_node_os.default.homedir(), ".kube-shell");
-}
-function writePrivate(file, data) {
-  const dir = import_node_path3.default.dirname(file);
-  import_node_fs3.default.mkdirSync(dir, { recursive: true, mode: 448 });
-  import_node_fs3.default.chmodSync(dir, 448);
-  const tmp = `${file}.${process.pid}.tmp`;
-  import_node_fs3.default.writeFileSync(tmp, data, { mode: 384 });
-  import_node_fs3.default.chmodSync(tmp, 384);
-  import_node_fs3.default.renameSync(tmp, file);
-  import_node_fs3.default.chmodSync(file, 384);
-}
-function tryWritePrivate(file, data) {
-  try {
-    writePrivate(file, data);
-    return true;
-  } catch {
-    return false;
-  }
-}
+var import_node_fs5 = __toESM(require("node:fs"), 1);
+var import_node_path5 = __toESM(require("node:path"), 1);
 
 // cli/redact-output.ts
 function wantsRedactedStdout(args) {
@@ -2877,7 +3035,7 @@ function redactKubectlStdout(args, stdout) {
 // cli/live.ts
 var TTL_MS = 12e3;
 function cachePath() {
-  return import_node_path4.default.join(stateDir(), "live.json");
+  return import_node_path5.default.join(stateDir(), "live.json");
 }
 var KIND = {
   Pod: "pod",
@@ -2935,7 +3093,7 @@ function readCache(key) {
   const now = Date.now();
   if (memory && memory.key === key && now - memory.at < TTL_MS) return memory.cluster;
   try {
-    const parsed = JSON.parse(import_node_fs4.default.readFileSync(cachePath(), "utf8"));
+    const parsed = JSON.parse(import_node_fs5.default.readFileSync(cachePath(), "utf8"));
     if (parsed.key === key && now - parsed.at < TTL_MS && parsed.cluster?.objects) {
       memory = parsed;
       return parsed.cluster;
@@ -2953,7 +3111,7 @@ function invalidateLive() {
   memory = null;
   contextMemory = null;
   try {
-    import_node_fs4.default.rmSync(cachePath(), { force: true });
+    import_node_fs5.default.rmSync(cachePath(), { force: true });
   } catch {
   }
 }
@@ -3339,10 +3497,42 @@ function runLive(args, options = {}) {
   return result.status ?? 1;
 }
 
+// cli/plans.ts
+var import_node_crypto = __toESM(require("node:crypto"), 1);
+var import_node_fs6 = __toESM(require("node:fs"), 1);
+var import_node_path6 = __toESM(require("node:path"), 1);
+var TTL_MS2 = 5 * 60 * 1e3;
+function planPath(id) {
+  return import_node_path6.default.join(stateDir(), "plans", `${id}.json`);
+}
+function mintPlan(record, now = Date.now()) {
+  const planId = import_node_crypto.default.randomBytes(16).toString("hex");
+  const stored = { planId, ...record, expires: now + TTL_MS2 };
+  writePrivate(planPath(planId), JSON.stringify(stored));
+  return planId;
+}
+function consumePlan(planId, expected, now = Date.now()) {
+  const file = planPath(planId);
+  let stored;
+  try {
+    stored = JSON.parse(import_node_fs6.default.readFileSync(file, "utf8"));
+  } catch {
+    return { ok: false, reason: "plan expired or unknown" };
+  }
+  if (!stored.expires || stored.expires <= now) {
+    import_node_fs6.default.rmSync(file, { force: true });
+    return { ok: false, reason: "plan expired or unknown" };
+  }
+  const same = stored.context === expected.context && stored.namespace === expected.namespace && JSON.stringify(stored.argv) === JSON.stringify(expected.argv);
+  if (!same) return { ok: false, reason: "plan does not match this command" };
+  import_node_fs6.default.rmSync(file, { force: true });
+  return { ok: true };
+}
+
 // cli/tty.ts
-var import_node_fs5 = __toESM(require("node:fs"), 1);
+var import_node_fs7 = __toESM(require("node:fs"), 1);
 var RETRY = /* @__PURE__ */ new Set(["EAGAIN", "EWOULDBLOCK", "EINTR"]);
-function openPromptInput(platform = process.platform, open = (file) => import_node_fs5.default.openSync(file, "r")) {
+function openPromptInput(platform = process.platform, open = (file) => import_node_fs7.default.openSync(file, "r")) {
   const stdin = { fd: 0, close: () => {
   } };
   if (platform === "win32") return stdin;
@@ -3352,9 +3542,9 @@ function openPromptInput(platform = process.platform, open = (file) => import_no
   } catch {
     return stdin;
   }
-  return { fd, close: () => import_node_fs5.default.closeSync(fd) };
+  return { fd, close: () => import_node_fs7.default.closeSync(fd) };
 }
-function readSyncRetry(fd, buf, read = (f, b) => import_node_fs5.default.readSync(f, b, 0, b.length, null), sleep = sleepMs) {
+function readSyncRetry(fd, buf, read = (f, b) => import_node_fs7.default.readSync(f, b, 0, b.length, null), sleep = sleepMs) {
   for (; ; ) {
     try {
       return read(fd, buf);
@@ -3830,6 +4020,15 @@ function openView(clusterIn, options) {
             state = { ...state, textLength: text.length, scroll: 0, mode: "text" };
           }
         }
+        if (effect.type === "arm-delete" || effect.type === "delete") {
+          if (options.typedConfirm) {
+            state = {
+              ...state,
+              message: "typed context: run kube delete from the shell"
+            };
+            continue;
+          }
+        }
         if (effect.type === "arm-delete") {
           const row = list[effect.index];
           if (row) {
@@ -3863,7 +4062,17 @@ function openView(clusterIn, options) {
 function wantsBlast(plan) {
   return plan.verb === "delete" || plan.verb === "drain" || plan.verb === "scale" && plan.risk === "high";
 }
-function liveBlast(plan, engineLine) {
+function commandArgs(engineLine, cluster) {
+  const args = [...kubectlArgs(engineLine)];
+  const hasNs = args.some(
+    (token) => token === "-n" || token === "--namespace" || token.startsWith("--namespace=") || token.startsWith("-n=")
+  );
+  const hasCtx = args.some((token) => token === "--context" || token.startsWith("--context="));
+  if (!hasNs) args.push("-n", namespaceOf(cluster) || "default");
+  if (!hasCtx && cluster.current) args.push("--context", cluster.current);
+  return args;
+}
+function liveBlast(plan, engineLine, cluster) {
   const started = Date.now();
   const now = () => Date.now();
   const getJson = (args) => {
@@ -3871,7 +4080,19 @@ function liveBlast(plan, engineLine) {
     if (left <= 0) return { ok: false, json: null, error: "timed out" };
     return runJson(args, left);
   };
-  return blastRadius(plan, kubectlArgs(engineLine), getJson, { now });
+  return blastRadius(plan, commandArgs(engineLine, cluster), getJson, { now });
+}
+function useNamespace(cluster, namespace) {
+  return {
+    ...cluster,
+    contexts: cluster.contexts.map(
+      (item) => item.name === cluster.current ? { ...item, namespace } : item
+    )
+  };
+}
+function useContext(cluster, name) {
+  if (!cluster.contexts.some((item) => item.name === name)) return null;
+  return { ...cluster, current: name };
 }
 function runUserLine(line, cluster, host2, options = {}) {
   let trimmed = line.trim();
@@ -3910,14 +4131,27 @@ function runUserLine(line, cluster, host2, options = {}) {
     if (!script) return { output: "usage: kube completion bash|zsh|fish", ok: false, cluster };
     return { output: script, ok: true, cluster };
   }
+  if (meta === "ns" || meta === "ctx") {
+    const name = trimmed.split(/\s+/).slice(1).join(" ").trim();
+    if (!name) return { output: `usage: ${meta} <name>`, ok: false, cluster };
+    if (!cluster.current) return { output: "no current context", ok: false, cluster };
+    if (meta === "ns") {
+      return { output: `namespace ${name}`, ok: true, cluster: useNamespace(cluster, name) };
+    }
+    const next = useContext(cluster, name);
+    if (!next) return { output: `no context ${name}`, ok: false, cluster };
+    return { output: `context ${name}`, ok: true, cluster: next };
+  }
   if (meta === "view" || meta === "ui") {
     const parts = trimmed.split(/\s+/).slice(1);
     const all = parts.includes("-A") || parts.includes("--all-namespaces") || parts.includes("all");
     const word = parts.find((part) => part !== "all" && !part.startsWith("-"));
+    const rule2 = ruleFor(host2.policy ?? null, cluster.current);
     const next = openView(cluster, {
       board: boardFrom(word),
       all,
       yes: host2.yes,
+      typedConfirm: rule2.confirm === "typed",
       reload: (wantAll, namespace) => {
         invalidateLive();
         return liveCluster(wantAll ? "kubectl get pods -A" : `kubectl get pods -n ${namespace}`);
@@ -3931,10 +4165,15 @@ function runUserLine(line, cluster, host2, options = {}) {
     if (!body) return { output: "usage: kube plan [--json] delete pod <name>", ok: false, cluster };
     const view2 = toEngine(body, body.length, "repl");
     const planned2 = planCommand(view2.line, cluster);
-    const blast = wantsBlast(planned2) ? liveBlast(planned2, view2.line) : void 0;
+    const blast = wantsBlast(planned2) ? liveBlast(planned2, view2.line, cluster) : void 0;
     if (asJson) {
       const payload = blast ? { ...planned2, blast } : planned2;
-      return { output: JSON.stringify(payload), ok: true, cluster };
+      const planId = mintPlan({
+        context: planned2.context,
+        namespace: planned2.namespace,
+        argv: commandArgs(view2.line, cluster)
+      });
+      return { output: JSON.stringify({ ...payload, planId }), ok: true, cluster };
     }
     const text = blast ? formatBlast(blast) : "";
     return {
@@ -3959,20 +4198,49 @@ ${text}` : formatPlan(planned2),
   }
   const view = toEngine(trimmed, trimmed.length, "repl");
   const planned = planCommand(view.line, cluster);
-  if (planned.risk === "high" && !host2.yes) {
-    const extra = wantsBlast(planned) ? formatBlast(liveBlast(planned, view.line)) : "";
+  const rule = ruleFor(host2.policy ?? null, cluster.current);
+  const argv = commandArgs(view.line, cluster);
+  if (rule.deny.includes(planned.verb)) {
+    return { output: `refused: ${planned.verb} is denied by policy`, ok: false, cluster };
+  }
+  if (host2.agent && host2.policy?.agents && planned.risk === "read" && !host2.policy.agents.allow.includes(planned.verb)) {
+    return { output: `refused: ${planned.verb} is not allowed for agents`, ok: false, cluster };
+  }
+  const needsPlan = host2.agent === true && host2.policy?.agents?.writeRequires === "approved-plan" && planned.mutating;
+  if (needsPlan) {
+    if (!host2.planId) {
+      return {
+        output: "refused: agent writes need --plan-id from plan --json",
+        ok: false,
+        cluster
+      };
+    }
+    const consumed = consumePlan(host2.planId, {
+      context: planned.context,
+      namespace: planned.namespace,
+      argv
+    });
+    if (!consumed.ok) return { output: `refused: ${consumed.reason}`, ok: false, cluster };
+  } else if (rule.confirm === "typed" && host2.yes && host2.confirmContext !== cluster.current) {
+    return {
+      output: `refused: pass --confirm-context ${cluster.current}`,
+      ok: false,
+      cluster
+    };
+  } else if ((planned.risk === "high" || rule.mode === "guarded" && planned.risk === "low") && !host2.yes) {
+    const extra = wantsBlast(planned) ? formatBlast(liveBlast(planned, view.line, cluster)) : "";
     process.stderr.write(`${formatPlan(planned)}${extra ? `
 ${extra}` : ""}
 `);
     if (!host2.confirm("Run it? [y/N] ")) return { output: "not run", ok: false, cluster };
   }
-  const code = runLive(kubectlArgs(view.line), { inheritStdin: options.inheritStdin });
+  const code = runLive(argv, { inheritStdin: options.inheritStdin });
   return { output: "", ok: code === 0, cluster: applyLiveContext(cluster) };
 }
 
 // cli/redact.ts
 var PAIR_FLAGS = ["--from-literal", "--from-file"];
-var VALUE_FLAGS = ["--docker-password", "--password", "--token", "--client-secret"];
+var VALUE_FLAGS2 = ["--docker-password", "--password", "--token", "--client-secret"];
 var SENSITIVE_KEY = /^(password|token|secret|apikey|api-key|client-secret|client_secret)$/i;
 function hidePair(value) {
   const eq = value.indexOf("=");
@@ -4008,7 +4276,7 @@ function redactLine(line) {
       }
       continue;
     }
-    const valueFlag = matchFlag(token, VALUE_FLAGS);
+    const valueFlag = matchFlag(token, VALUE_FLAGS2);
     if (valueFlag) {
       if (token === valueFlag) {
         out.push(token);
@@ -4028,11 +4296,17 @@ function redactLine(line) {
 
 // cli/main.ts
 var VERSION = true ? "0.5.1" : "0.0.0-dev";
-var HISTORY = import_node_path5.default.join(stateDir(), "history");
-var session = { yes: false };
+var HISTORY = import_node_path7.default.join(stateDir(), "history");
+var session = {
+  yes: false,
+  agent: false,
+  policy: null,
+  typed: false,
+  contextName: ""
+};
 function loadHistory() {
   try {
-    return import_node_fs6.default.readFileSync(HISTORY, "utf8").split("\n").map((line) => line.trimEnd()).filter(Boolean).slice(-200).reverse();
+    return import_node_fs8.default.readFileSync(HISTORY, "utf8").split("\n").map((line) => line.trimEnd()).filter(Boolean).slice(-200).reverse();
   } catch {
     return [];
   }
@@ -4040,7 +4314,7 @@ function loadHistory() {
 var HISTORY_LIMIT = 200;
 function trimHistoryFile() {
   try {
-    const lines = import_node_fs6.default.readFileSync(HISTORY, "utf8").split("\n").filter(Boolean);
+    const lines = import_node_fs8.default.readFileSync(HISTORY, "utf8").split("\n").filter(Boolean);
     if (lines.length <= HISTORY_LIMIT) return;
     writePrivate(HISTORY, `${lines.slice(-HISTORY_LIMIT).join("\n")}
 `);
@@ -4051,9 +4325,9 @@ function remember2(line) {
   try {
     const trimmed = redactLine(line.trim());
     if (!trimmed) return;
-    if (!import_node_fs6.default.existsSync(HISTORY)) writePrivate(HISTORY, "");
-    else import_node_fs6.default.chmodSync(HISTORY, 384);
-    import_node_fs6.default.appendFileSync(HISTORY, `${trimmed}
+    if (!import_node_fs8.default.existsSync(HISTORY)) writePrivate(HISTORY, "");
+    else import_node_fs8.default.chmodSync(HISTORY, 384);
+    import_node_fs8.default.appendFileSync(HISTORY, `${trimmed}
 `);
     trimHistoryFile();
   } catch {
@@ -4093,8 +4367,34 @@ function suggest(line, cursor, mode, fallback) {
     cluster
   };
 }
+function readOneLine(fd) {
+  let text = "";
+  const buf = Buffer.alloc(1);
+  try {
+    for (; ; ) {
+      const n = import_node_fs8.default.readSync(fd, buf);
+      if (n <= 0) break;
+      const char = buf.toString("utf8", 0, n);
+      text += char;
+      if (char === "\n" || char === "\r") break;
+    }
+  } catch {
+    return text;
+  }
+  return text;
+}
 function confirm(prompt) {
   if (session.yes) return true;
+  if (session.typed) {
+    process.stderr.write(`Type ${session.contextName} to run it: `);
+    if (!process.stdin.isTTY) return readOneLine(0).trim() === session.contextName;
+    const input2 = openPromptInput();
+    try {
+      return readOneLine(input2.fd).trim() === session.contextName;
+    } finally {
+      input2.close();
+    }
+  }
   process.stderr.write(prompt);
   if (!process.stdin.isTTY) return false;
   const input = openPromptInput();
@@ -4105,7 +4405,21 @@ function confirm(prompt) {
   }
 }
 function host() {
-  return { yes: session.yes, help: cliHelp(), version: VERSION, confirm };
+  return {
+    yes: session.yes,
+    help: cliHelp(),
+    version: VERSION,
+    confirm,
+    agent: session.agent,
+    planId: session.planId,
+    confirmContext: session.confirmContext,
+    policy: session.policy
+  };
+}
+function armSession(cluster) {
+  const rule = ruleFor(session.policy, cluster.current);
+  session.typed = rule.confirm === "typed";
+  session.contextName = cluster.current;
 }
 function writeResult(result) {
   if (!result.output) return;
@@ -4163,6 +4477,7 @@ ${body}\r
   rl.cursor = next.cursor;
 }
 function startRepl(clusterIn) {
+  armSession(clusterIn);
   process.on("SIGINT", () => {
   });
   let cluster = clusterIn;
@@ -4192,7 +4507,10 @@ function startRepl(clusterIn) {
     }
   );
   const prompt = () => {
-    rl.setPrompt(`${promptOf(cluster)}$ `);
+    const guarded = ruleFor(session.policy, cluster.current).mode === "guarded";
+    const label = promptLabel(guarded, `${promptOf(cluster)}$ `);
+    const shown = guarded && label.startsWith("[GUARDED] ") ? `\x1B[31m[GUARDED]\x1B[0m${label.slice("[GUARDED]".length)}` : label;
+    rl.setPrompt(shown);
   };
   process.stdout.write(
     `kube  live cluster ${promptOf(cluster)}. Tab completes real names. \`help\` lists commands.
@@ -4204,6 +4522,7 @@ function startRepl(clusterIn) {
     remember2(input);
     rl.pause();
     if (process.stdin.isTTY) process.stdin.setRawMode(false);
+    armSession(cluster);
     const result = runUserLine(input, cluster, host());
     if (process.stdin.isTTY) process.stdin.setRawMode(true);
     rl.resume();
@@ -4255,23 +4574,17 @@ function boot() {
   return cluster;
 }
 function takeFlags(argv) {
-  let yes = false;
-  const rest = [];
-  for (const arg of argv) {
-    if (rest.length === 0 && arg === "--sample") {
-      process.stderr.write(
-        "sample mode was removed. kube only runs against a reachable cluster.\n"
-      );
-      process.exit(1);
-    }
-    if (rest.length === 0 && arg === "--live") continue;
-    if (rest.length === 0 && (arg === "--yes" || arg === "-y")) {
-      yes = true;
-      continue;
-    }
-    rest.push(arg);
+  const parsed = leadingFlags(argv);
+  if (parsed.sample) {
+    process.stderr.write("sample mode was removed. kube only runs against a reachable cluster.\n");
+    process.exit(1);
   }
-  return { yes, rest };
+  if (parsed.error) {
+    process.stderr.write(`${parsed.error}
+`);
+    process.exit(1);
+  }
+  return parsed;
 }
 function blankCluster() {
   return {
@@ -4306,12 +4619,29 @@ function main() {
     printComplete(line2, Number.isFinite(cursor) ? cursor : line2.length, cluster2, asJson);
     return;
   }
-  const { yes, rest } = takeFlags(argv);
+  const flags = takeFlags(argv);
+  const { yes, rest } = flags;
   if (yes && !allowYes(yes, rest.length, process.stdin.isTTY === true)) {
     process.stderr.write("`--yes` applies to one command, not the shell.\n");
     process.exit(1);
   }
   session.yes = yes;
+  session.agent = process.env.KUBE_SHELL_AGENT === "1";
+  session.planId = flags.planId;
+  session.confirmContext = flags.confirmContext;
+  const loaded = readPolicy(
+    policyFile({
+      agent: session.agent,
+      flag: session.agent ? void 0 : flags.policy,
+      envPath: session.agent ? void 0 : process.env.KUBE_SHELL_POLICY
+    })
+  );
+  if (loaded && "error" in loaded) {
+    process.stderr.write(`kube: ${loaded.error}
+`);
+    process.exit(1);
+  }
+  session.policy = loaded;
   const quoted = [];
   for (const arg of rest) {
     const next = quoteArg(arg);
@@ -4336,10 +4666,11 @@ function main() {
   if (rest.length === 0) {
     if (!process.stdin.isTTY) {
       let current = cluster;
-      const text = import_node_fs6.default.readFileSync(0, "utf8");
+      const text = import_node_fs8.default.readFileSync(0, "utf8");
       let code = 0;
       for (const line2 of text.split("\n")) {
         if (!line2.trim()) continue;
+        armSession(current);
         const result2 = runUserLine(line2, current, host());
         current = result2.cluster;
         if (result2.output !== "\x1Bc") writeResult(result2);
@@ -4352,6 +4683,7 @@ function main() {
     return;
   }
   const inheritStdin = !process.stdin.isTTY;
+  armSession(cluster);
   const result = runUserLine(line, cluster, host(), { inheritStdin });
   writeResult(result);
   process.exit(result.ok ? 0 : 1);
