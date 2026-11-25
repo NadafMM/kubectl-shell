@@ -126,7 +126,11 @@ func RememberUndo(argv []string, cluster Cluster, id string, now time.Time) {
 		_ = writePrivate(filepath.Join(undoDir(), id+".json"), string(raw))
 		return
 	}
-	code, stdout, _ := CaptureLive([]string{"get", kind, name, "-n", ns, "-o", "json"})
+	getArgs := []string{"get", kind, name, "-n", ns, "-o", "json"}
+	if cluster.Current != "" {
+		getArgs = append(getArgs, "--context", cluster.Current)
+	}
+	code, stdout, _ := CaptureLive(getArgs)
 	if code != 0 || strings.TrimSpace(stdout) == "" {
 		return
 	}
@@ -211,13 +215,19 @@ func UndoRefusal(record UndoRecord) string {
 
 // RestoreArgs builds the kubectl argv that undoes a record.
 func RestoreArgs(record UndoRecord) []string {
+	var args []string
 	if record.Revision != "" && undoWorkloads[record.Kind] {
-		return []string{
+		args = []string{
 			"rollout", "undo", record.Kind + "/" + record.Name,
 			"-n", record.Namespace, "--to-revision=" + record.Revision,
 		}
+	} else {
+		args = []string{"apply", "-n", record.Namespace, "-f", "-"}
 	}
-	return []string{"apply", "-n", record.Namespace, "-f", "-"}
+	if record.Context != "" {
+		args = append(args, "--context", record.Context)
+	}
+	return args
 }
 
 func pruneUndo(now time.Time) {

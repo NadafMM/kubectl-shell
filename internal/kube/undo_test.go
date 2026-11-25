@@ -77,7 +77,7 @@ func TestRememberUndoDeploymentRevision(t *testing.T) {
 		t.Fatal(string(body))
 	}
 	args := RestoreArgs(record)
-	if args[0] != "rollout" || !containsString(args, "--to-revision=3") {
+	if args[0] != "rollout" || !containsString(args, "--to-revision=3") || !containsString(args, "--context") {
 		t.Fatal(args)
 	}
 }

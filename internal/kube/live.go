@@ -328,14 +328,20 @@ func RunLive(args []string, options RunLiveOptions) int {
 	return 127
 }
 
-// ApplyLiveContext refreshes the current context list from kubeconfig.
+// ApplyLiveContext refreshes the known context list from kubeconfig without
+// overwriting the shell's current context (scope may pin --context separately).
 func ApplyLiveContext(cluster Cluster) Cluster {
 	base, ok := contextCluster()
 	if !ok {
 		return cluster
 	}
-	cluster.Current = base.Current
+	kept := cluster.Current
 	cluster.Contexts = base.Contexts
+	if kept != "" {
+		cluster.Current = kept
+	} else {
+		cluster.Current = base.Current
+	}
 	return cluster
 }
 

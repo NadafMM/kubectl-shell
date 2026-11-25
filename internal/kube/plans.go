@@ -6,10 +6,14 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 )
 
 const planTTL = 5 * time.Minute
+
+var planIDPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 type PlanRecord struct {
 	PlanID    string   `json:"planId"`
@@ -25,8 +29,27 @@ type PlanExpect struct {
 	Argv      []string
 }
 
-func planPath(id string) string {
-	return filepath.Join(StateDir(), "plans", id+".json")
+// ValidPlanID is true for minted ids: exactly 32 lowercase hex characters.
+func ValidPlanID(id string) bool {
+	return planIDPattern.MatchString(id)
+}
+
+func plansDir() string {
+	return filepath.Join(StateDir(), "plans")
+}
+
+// planPath resolves id under ~/.kube-shell/plans. Rejects anything that escapes.
+func planPath(id string) (string, bool) {
+	if !ValidPlanID(id) {
+		return "", false
+	}
+	base := plansDir()
+	full := filepath.Clean(filepath.Join(base, id+".json"))
+	rel, err := filepath.Rel(base, full)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", false
+	}
+	return full, true
 }
 
 // MintPlan stores a short-lived record an agent can pass back with --plan-id.
@@ -47,7 +70,11 @@ func MintPlan(record PlanExpect, now time.Time) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := writePrivate(planPath(id), string(raw)); err != nil {
+	path, ok := planPath(id)
+	if !ok {
+		return "", os.ErrInvalid
+	}
+	if err := writePrivate(path, string(raw)); err != nil {
 		return "", err
 	}
 	return id, nil
@@ -55,19 +82,23 @@ func MintPlan(record PlanExpect, now time.Time) (string, error) {
 
 // ConsumePlan accepts a record once when it matches the command about to run.
 func ConsumePlan(planID string, expected PlanExpect, now time.Time) (bool, string) {
-	raw, err := os.ReadFile(planPath(planID))
+	path, ok := planPath(planID)
+	if !ok {
+		return false, "plan expired or unknown"
+	}
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		return false, "plan expired or unknown"
 	}
 	var stored PlanRecord
 	if err := json.Unmarshal(raw, &stored); err != nil || stored.Expires <= now.UnixMilli() {
-		_ = os.Remove(planPath(planID))
+		_ = os.Remove(path)
 		return false, "plan expired or unknown"
 	}
 	if stored.Context != expected.Context || stored.Namespace != expected.Namespace || !sameArgv(stored.Argv, expected.Argv) {
 		return false, "plan does not match this command"
 	}
-	_ = os.Remove(planPath(planID))
+	_ = os.Remove(path)
 	return true, ""
 }
 
