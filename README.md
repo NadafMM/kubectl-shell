@@ -69,6 +69,8 @@ A policy file at `~/.kube-shell/policy.json` can mark a context `guarded` or `co
 
 `kube sandbox up` starts a local kind cluster named `kube-shell-sandbox` and writes only `~/.kube-shell/sandbox/kubeconfig`. `kube --sandbox` and `kube sandbox shell` use that file. `kube sandbox down` deletes the cluster. `~/.kube/config` is not modified.
 
+`record on` inside the shell, or `kube --record session.md`, writes a redacted Markdown runbook of commands that actually ran. A refused confirmation is left out. The default file is `~/.kube-shell/sessions/`.
+
 Agents: `kube plan --json …`, then `--yes` when the plan matches intent. `__complete --json` for completion without running the line.
 
 ## Shell completion
@@ -112,7 +114,7 @@ npm run lint
 npm run e2e:tty   # Linux/macOS; requires Python 3
 ```
 
-The Go port is started beside this CLI and is not the installed `kube` yet. It completes words, prints shell scripts, answers `plan` and `ask` (including live pod diagnosis for crashes, OOM, image pulls, config errors, pending, and probes), runs kubectl for one-shot commands, opens `view` / `ui`, opens the interactive shell (or a stdin script when there is no TTY), manages `sandbox` / `--sandbox`, and serves `mcp` JSON-RPC (`kube_context`, `kube_plan`, `kube_execute`). Shell `ns` / `ctx` change scope for that session only. Policy, `--plan-id`, audit, and `undo` apply. High-risk and guarded verbs ask before they run unless `--yes` is set. Reads keep the completion cache; writes clear it. Delete, drain, and scale-to-zero plans include a blast-radius report. Secret and ConfigMap MCP responses are redacted. Piped kubectl stdout is redacted when `KUBE_SHELL_REDACT_STDOUT` is set (same as the TypeScript CLI).
+The Go port is started beside this CLI and is not the installed `kube` yet. It completes words, prints shell scripts, answers `plan` and `ask` (including live pod diagnosis for crashes, OOM, image pulls, config errors, pending, and probes), runs kubectl for one-shot commands, opens `view` / `ui`, opens the interactive shell (or a stdin script when there is no TTY), manages `sandbox` / `--sandbox`, serves `mcp` JSON-RPC (`kube_context`, `kube_plan`, `kube_execute`), and can `record` a redacted Markdown runbook. Shell `ns` / `ctx` change scope for that session only. Policy, `--plan-id`, audit, and `undo` apply. High-risk and guarded verbs ask before they run unless `--yes` is set. Reads keep the completion cache; writes clear it. Delete, drain, and scale-to-zero plans include a blast-radius report. Secret and ConfigMap MCP responses are redacted. Piped kubectl stdout is redacted when `KUBE_SHELL_REDACT_STDOUT` is set (same as the TypeScript CLI).
 
 ```bash
 go test ./cmd/kube ./internal/kube

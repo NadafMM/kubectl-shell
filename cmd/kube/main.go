@@ -86,6 +86,18 @@ func run(args []string, stdout, stderr io.Writer, opts runOptions) int {
 		yes: yes, agent: agent, planID: flags.PlanID, confirmContext: flags.ConfirmContext,
 		policy: policy, stdinTTY: stdinTTY,
 	}
+	if flags.Record != "" {
+		cluster := clusterFor("kubectl")
+		ns := kube.NamespaceOf(cluster)
+		if ns == "" {
+			ns = "default"
+		}
+		ctx := cluster.Current
+		if ctx == "" {
+			ctx = "none"
+		}
+		kube.StartRecord(flags.Record, ctx, ns, time.Now().UTC().Format(time.RFC3339Nano))
+	}
 
 	if len(rest) == 0 {
 		if !stdinTTY {
@@ -170,6 +182,7 @@ Policy, plan-id, audit, undo, view, sandbox, and mcp apply. With no args it open
   kube view [pods|deploy|svc|nodes|ns] [-A]
   kube sandbox up|down|shell
   kube --sandbox get pods
+  kube --record session.md
   kube mcp
   kube plan [--json] <kubectl args>
   kube ask [--json] <question>
@@ -185,6 +198,7 @@ snapshot for 12 seconds. Delete, drain, and scale-to-zero plans include a
 blast-radius report. High-risk and guarded commands ask before they run unless --yes is set.
 Reads keep the completion cache; writes clear it. Mutating named edits can be undone.
 Without a TTY, view prints a plain table. Inside the shell, ns and ctx change scope only.
+record on|off (or --record) writes a redacted Markdown runbook of commands that ran.
 sandbox uses a separate kubeconfig under ~/.kube-shell/sandbox and does not rewrite ~/.kube/config.`
 }
 
@@ -455,6 +469,7 @@ func runKubectl(argv []string, host session, stdout, stderr io.Writer, opts runO
 		return 1
 	}
 	needsPlan := host.agent && host.policy != nil && host.policy.Agents != nil && host.policy.Agents.WriteRequires == "approved-plan" && plan.Mutating
+	blastText := ""
 	if needsPlan {
 		if host.planID == "" {
 			writeAudit("denied-policy", "none", nil)
@@ -475,6 +490,7 @@ func runKubectl(argv []string, host session, stdout, stderr io.Writer, opts runO
 		text := kube.FormatPlan(plan)
 		if wantsBlast(plan) {
 			if extra := kube.FormatBlast(liveBlast(plan, argv)); extra != "" {
+				blastText = extra
 				text += "\n" + extra
 			}
 		}
@@ -517,6 +533,17 @@ func runKubectl(argv []string, host session, stdout, stderr io.Writer, opts runO
 		decision = "dry-run"
 	}
 	writeAudit(decision, approver, &code)
+	entry := kube.RunbookEntry{
+		Decision: decision, Verb: plan.Verb,
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+		Context:   plan.Context, Namespace: plan.Namespace,
+		Command: kube.RedactCommand(argv), Risk: plan.Risk, ExitCode: &code,
+		Blast: blastText,
+	}
+	if plan.Mutating {
+		entry.Summary = plan.Summary
+	}
+	kube.NoteRan(entry)
 	return code
 }
 

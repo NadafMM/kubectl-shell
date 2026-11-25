@@ -18,3 +18,13 @@ func TestParseLeadingFlagsUnknown(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestParseLeadingFlagsRecord(t *testing.T) {
+	parsed := ParseLeadingFlags([]string{"--record", "out.md", "get", "pods"})
+	if parsed.Error != "" || parsed.Record != "out.md" {
+		t.Fatal(parsed)
+	}
+	if len(parsed.Rest) != 2 || parsed.Rest[0] != "get" {
+		t.Fatal(parsed.Rest)
+	}
+}

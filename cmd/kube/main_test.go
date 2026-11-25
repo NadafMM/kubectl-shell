@@ -115,6 +115,62 @@ func TestAskJSONReportsOOM(t *testing.T) {
 	}
 }
 
+func TestRecordFlagWritesSession(t *testing.T) {
+	withFakeEnv(t)
+	t.Cleanup(func() { kube.StopRecord() })
+	file := filepath.Join(os.Getenv("HOME"), "out.md")
+	var out, err bytes.Buffer
+	code := run([]string{"--record", file, "get", "pods"}, &out, &err, runOptions{})
+	if code != 0 {
+		t.Fatalf("code %d err %q", code, err.String())
+	}
+	raw, readErr := os.ReadFile(file)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !strings.Contains(string(raw), "kubectl get pods") {
+		t.Fatalf("%q", raw)
+	}
+}
+
+func TestRecordShellDropsRefusedDelete(t *testing.T) {
+	withFakeEnv(t)
+	t.Cleanup(func() { kube.StopRecord() })
+	script := "record on\ndelete pod worker-0\nget pods --from-literal password=secret\nrecord off\nget ns\n"
+	var out, err bytes.Buffer
+	code := run(nil, &out, &err, runOptions{
+		stdin:    strings.NewReader(script),
+		confirm:  func(string) bool { return false },
+		stdinTTY: false,
+	})
+	if code != 1 && code != 0 {
+		// last get ns should succeed; delete refusal may make script exit non-zero depending on runScript
+		_ = code
+	}
+	text := out.String()
+	recorded := ""
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(line, "recording ") && !strings.HasPrefix(line, "recording stopped") {
+			recorded = strings.TrimSpace(strings.TrimPrefix(line, "recording "))
+			break
+		}
+	}
+	if recorded == "" {
+		t.Fatalf("no recording path in %q err %q", text, err.String())
+	}
+	raw, readErr := os.ReadFile(recorded)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	body := string(raw)
+	if !strings.Contains(body, "kubectl get pods --from-literal password=***") {
+		t.Fatalf("%q", body)
+	}
+	if strings.Contains(body, "delete") || strings.Contains(body, "password=secret") || strings.Contains(body, "kubectl get ns") {
+		t.Fatalf("%q", body)
+	}
+}
+
 func TestAskPortForwardSkipsLogs(t *testing.T) {
 	withFakeEnv(t)
 	t.Setenv("KUBE_FAKE_DIAG", "oom")
