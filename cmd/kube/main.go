@@ -17,11 +17,12 @@ const version = "0.5.1"
 
 // runOptions lets tests supply confirm answers and stdio without a real TTY.
 type runOptions struct {
-	confirm   func(prompt string) bool
-	stdinTTY  bool
-	runLive   func(args []string, options kube.RunLiveOptions) int
-	probeLive func() bool
-	agent     *bool
+	confirm    func(prompt string) bool
+	stdinTTY   bool
+	runLive    func(args []string, options kube.RunLiveOptions) int
+	probeLive  func() bool
+	agent      *bool
+	forcePlain bool
 }
 
 type session struct {
@@ -115,7 +116,9 @@ func run(args []string, stdout, stderr io.Writer, opts runOptions) int {
 
 	meta := kube.MetaOf(strings.Join(rest, " "))
 	switch meta {
-	case "view", "ui", "ns", "ctx", "live", "reset", "clear", "exit", "quit", "mcp":
+	case "view", "ui":
+		return viewCommand(rest[1:], host, stdout, stderr, opts)
+	case "ns", "ctx", "live", "reset", "clear", "exit", "quit", "mcp":
 		fmt.Fprintf(stderr, "the Go port has not implemented %q yet. Use the TypeScript build.\n", rest[0])
 		return 2
 	}
@@ -127,12 +130,14 @@ func helpText() string {
 	return `kube ` + version + ` (go)
 
 This binary runs kubectl through a plan when risk is high, completes words, and answers ask.
-Policy, plan-id, and audit apply to one-shot commands. The interactive shell and view still run from the TypeScript build.
+Policy, plan-id, and audit apply to one-shot commands. kube view opens the resource list.
+The interactive shell still runs from the TypeScript build.
 
   kube --version
   kube --help
   kube get pods
   kube --yes delete pod <name>
+  kube view [pods|deploy|svc|nodes|ns] [-A]
   kube plan [--json] <kubectl args>
   kube ask [--json] <question>
   kube audit tail [-n 20]
@@ -144,7 +149,8 @@ Policy, plan-id, and audit apply to one-shot commands. The interactive shell and
 __complete fills resource names from kubectl when it answers, and keeps that
 snapshot for 12 seconds. Delete, drain, and scale-to-zero plans include a
 blast-radius report. High-risk and guarded commands ask before they run unless --yes is set.
-Reads keep the completion cache; writes clear it. Mutating named edits can be undone.`
+Reads keep the completion cache; writes clear it. Mutating named edits can be undone.
+Without a TTY, view prints a plain table.`
 }
 
 func complete(args []string, stdout io.Writer) int {
@@ -476,6 +482,64 @@ func runKubectl(argv []string, host session, stdout, stderr io.Writer, opts runO
 	}
 	writeAudit(decision, approver, &code)
 	return code
+}
+
+func viewCommand(args []string, host session, stdout, stderr io.Writer, opts runOptions) int {
+	probe := opts.probeLive
+	if probe == nil {
+		probe = kube.ProbeLive
+	}
+	if !probe() {
+		fmt.Fprintln(stderr, "kubectl cannot reach the cluster")
+		return 1
+	}
+	all := false
+	word := ""
+	for _, arg := range args {
+		switch arg {
+		case "-A", "--all-namespaces", "all":
+			all = true
+		default:
+			if !strings.HasPrefix(arg, "-") && word == "" {
+				word = arg
+			}
+		}
+	}
+	board := kube.BoardFrom(word)
+	line := "kubectl get pods"
+	if all {
+		line = "kubectl get pods -A"
+	}
+	cluster, ok := kube.LiveCluster(line)
+	if !ok {
+		fmt.Fprintln(stderr, "kubectl cannot describe the current context")
+		return 1
+	}
+	forcePlain := opts.forcePlain
+	stdoutFile, _ := stdout.(*os.File)
+	if stdoutFile == nil {
+		forcePlain = true
+	}
+	rule := kube.RuleFor(host.policy, cluster.Current)
+	kube.OpenView(cluster, kube.ViewOptions{
+		Board:        board,
+		All:          all,
+		Yes:          host.yes,
+		TypedConfirm: rule.Confirm == "typed",
+		ForcePlain:   forcePlain,
+		Stdout:       stdout,
+		StdoutFile:   stdoutFile,
+		Policy:       host.policy,
+		Reload: func(wantAll bool, namespace string) (kube.Cluster, bool) {
+			kube.InvalidateLive()
+			reloadLine := "kubectl get pods -n " + namespace
+			if wantAll {
+				reloadLine = "kubectl get pods -A"
+			}
+			return kube.LiveCluster(reloadLine)
+		},
+	})
+	return 0
 }
 
 func undoCommand(args []string, host session, stdout, stderr io.Writer, opts runOptions) int {
