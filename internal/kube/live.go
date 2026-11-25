@@ -261,16 +261,9 @@ type RunLiveOptions struct {
 
 // RunLive runs kubectl with inherited stdio. The completion cache is cleared
 // only when the argv can change names the snapshot holds.
+// When KUBE_SHELL_REDACT_STDOUT=1 and stdout is not a TTY, sensitive Secret,
+// ConfigMap, and kubeconfig payloads are captured and redacted before writing.
 func RunLive(args []string, options RunLiveOptions) int {
-	name := os.Getenv("KUBE_SHELL_KUBECTL")
-	if name == "" {
-		name = "kubectl"
-	}
-	argv := append([]string{}, args...)
-	if script := os.Getenv("KUBE_SHELL_NODE_SCRIPT"); script != "" {
-		argv = append([]string{script}, args...)
-	}
-	cmd := exec.Command(name, argv...)
 	stdin := options.Stdin
 	if stdin == nil {
 		stdin = os.Stdin
@@ -283,6 +276,30 @@ func RunLive(args []string, options RunLiveOptions) int {
 	if stderr == nil {
 		stderr = os.Stderr
 	}
+	stdoutTTY := false
+	if fi, err := stdout.Stat(); err == nil {
+		stdoutTTY = fi.Mode()&os.ModeCharDevice != 0
+	}
+	if WantsRedactedStdout(args) && !stdoutTTY {
+		code, out, errOut := CaptureLive(args)
+		if errOut != "" {
+			_, _ = io.WriteString(stderr, errOut)
+		}
+		_, _ = io.WriteString(stdout, RedactKubectlStdout(args, out))
+		if InvalidatesLiveCache(args) {
+			InvalidateLive()
+		}
+		return code
+	}
+	name := os.Getenv("KUBE_SHELL_KUBECTL")
+	if name == "" {
+		name = "kubectl"
+	}
+	argv := append([]string{}, args...)
+	if script := os.Getenv("KUBE_SHELL_NODE_SCRIPT"); script != "" {
+		argv = append([]string{script}, args...)
+	}
+	cmd := exec.Command(name, argv...)
 	switch {
 	case options.StdinReader != nil:
 		cmd.Stdin = options.StdinReader

@@ -302,3 +302,31 @@ func TestRunLiveClearsCacheOnDelete(t *testing.T) {
 		}
 	})
 }
+
+func TestRunLiveRedactsPipedSecretJSON(t *testing.T) {
+	withFake(t, func(log string) {
+		t.Setenv("KUBE_SHELL_REDACT_STDOUT", "1")
+		// Temp file is not a char device, so redaction kicks in like a pipe.
+		outFile, err := os.CreateTemp(t.TempDir(), "out")
+		if err != nil {
+			t.Fatal(err)
+		}
+		code := RunLive([]string{"get", "secret", "token", "-o", "json"}, RunLiveOptions{
+			Stdout: outFile,
+			Stderr: os.Stderr,
+		})
+		name := outFile.Name()
+		_ = outFile.Close()
+		if code != 0 {
+			t.Fatal(code)
+		}
+		raw, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(raw)
+		if !strings.Contains(text, "***") || strings.Contains(text, "cGFzcw==") {
+			t.Fatalf("stdout=%q", text)
+		}
+	})
+}
