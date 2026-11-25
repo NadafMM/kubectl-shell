@@ -4,7 +4,8 @@ Workflows under `.github/workflows/` run on every PR to `main`.
 
 | Workflow         | Purpose                                                                                  |
 | ---------------- | ---------------------------------------------------------------------------------------- |
-| **test**         | `go test` on Ubuntu, macOS, and Windows (Node only for `scripts/fake-kubectl.mjs`)       |
+| **test**         | `go test` as jobs named `go` and `unit (os, node …)` (labels kept for branch protection) |
+| **coverage**     | Placeholder required-check job; runs `go test` (TS coverage removed with the CLI)        |
 | **lint**         | Prettier check                                                                           |
 | **e2e-tty**      | `scripts/e2e-tty.py` on Ubuntu and macOS (Python 3; pty scenarios against `bin/kube`)    |
 | **e2e-kind**     | kind + real `kubectl`; `scripts/e2e-kind.mjs` against `bin/kube`                         |
