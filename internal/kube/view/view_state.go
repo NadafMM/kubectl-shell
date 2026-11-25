@@ -1,4 +1,4 @@
-package kube
+package view
 
 import "strings"
 

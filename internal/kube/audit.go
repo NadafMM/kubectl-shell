@@ -90,7 +90,7 @@ func AppendAudit(entry AuditEntry, maxBytes int) {
 		_ = os.Rename(file, previous)
 	}
 	if _, err := os.Stat(file); err != nil {
-		_ = writePrivate(file, line)
+		_ = WritePrivate(file, line)
 	} else {
 		f, err := os.OpenFile(file, os.O_APPEND|os.O_WRONLY, 0o600)
 		if err != nil {

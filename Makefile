@@ -3,7 +3,7 @@
 
 VERSION := $(shell tr -d ' \n\r\t' < VERSION)
 LDFLAGS := -s -w -X main.version=$(VERSION)
-GO_PACKAGES := ./cmd/kube ./internal/kube
+GO_PACKAGES := ./cmd/kube ./internal/kube/...
 
 .PHONY: all build test install dist clean version check-version
 

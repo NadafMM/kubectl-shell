@@ -1,7 +1,9 @@
-package kube
+package undo
 
 import (
 	"encoding/json"
+	"github.com/NadafMM/kubectl-shell/internal/kube"
+	"github.com/NadafMM/kubectl-shell/internal/kube/live"
 	"os"
 	"path/filepath"
 	"sort"
@@ -34,11 +36,11 @@ type UndoRecord struct {
 }
 
 func undoDir() string {
-	return filepath.Join(StateDir(), "undo")
+	return filepath.Join(kube.StateDir(), "undo")
 }
 
 func singularKind(token string) string {
-	if resource, ok := ResolveResource(token); ok {
+	if resource, ok := kube.ResolveResource(token); ok {
 		return resource.Singular
 	}
 	return strings.ToLower(token)
@@ -46,7 +48,7 @@ func singularKind(token string) string {
 
 // NamedTarget picks a single named object from a mutating kubectl argv.
 func NamedTarget(argv []string) (verb, kind, name string, ok bool) {
-	words := PositionalWords(argv).Words
+	words := kube.PositionalWords(argv).Words
 	if len(words) == 0 || !snapshotVerbs[words[0]] {
 		return "", "", "", false
 	}
@@ -102,15 +104,15 @@ func CleanSnapshot(value any) any {
 	return copy
 }
 
-func namespaceFromArgv(argv []string, cluster Cluster) string {
-	if ns, ok := FlagValue(argv, []string{"-n", "--namespace"}); ok && ns != "" {
+func namespaceFromArgv(argv []string, cluster kube.Cluster) string {
+	if ns, ok := kube.FlagValue(argv, []string{"-n", "--namespace"}); ok && ns != "" {
 		return ns
 	}
-	return NamespaceOf(cluster)
+	return kube.NamespaceOf(cluster)
 }
 
 // RememberUndo stores a pre-change snapshot for a named mutating command.
-func RememberUndo(argv []string, cluster Cluster, id string, now time.Time) {
+func RememberUndo(argv []string, cluster kube.Cluster, id string, now time.Time) {
 	verb, kind, name, ok := NamedTarget(argv)
 	if !ok {
 		return
@@ -123,14 +125,14 @@ func RememberUndo(argv []string, cluster Cluster, id string, now time.Time) {
 	if kind == "secret" || kind == "configmap" {
 		base.Refused = kind + " objects are not snapshotted"
 		raw, _ := json.Marshal(base)
-		_ = writePrivate(filepath.Join(undoDir(), id+".json"), string(raw))
+		_ = kube.WritePrivate(filepath.Join(undoDir(), id+".json"), string(raw))
 		return
 	}
 	getArgs := []string{"get", kind, name, "-n", ns, "-o", "json"}
 	if cluster.Current != "" {
 		getArgs = append(getArgs, "--context", cluster.Current)
 	}
-	code, stdout, _ := CaptureLive(getArgs)
+	code, stdout, _ := live.CaptureLive(getArgs)
 	if code != 0 || strings.TrimSpace(stdout) == "" {
 		return
 	}
@@ -159,7 +161,7 @@ func RememberUndo(argv []string, cluster Cluster, id string, now time.Time) {
 	if err != nil {
 		return
 	}
-	_ = writePrivate(filepath.Join(undoDir(), id+".json"), string(raw))
+	_ = kube.WritePrivate(filepath.Join(undoDir(), id+".json"), string(raw))
 	pruneUndo(now)
 }
 

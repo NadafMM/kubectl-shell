@@ -84,3 +84,16 @@ func SpliceToken(line string, start, end int, value string, pad bool) (string, i
 	}
 	return line[:start] + value + " " + after, start + len(value) + 1
 }
+
+// KubectlArgs drops the leading kubectl/k token from an engine line.
+func KubectlArgs(engineLine string) []string {
+	tokens := Tokenize(engineLine)
+	if len(tokens) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(tokens)-1)
+	for _, token := range tokens[1:] {
+		out = append(out, Unquote(token.Text))
+	}
+	return out
+}

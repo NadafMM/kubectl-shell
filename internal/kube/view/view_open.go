@@ -1,4 +1,4 @@
-package kube
+package view
 
 import (
 	"fmt"
@@ -7,21 +7,25 @@ import (
 	"strings"
 	"time"
 
+	"github.com/NadafMM/kubectl-shell/internal/kube"
 	"golang.org/x/term"
+
+	// ViewOptions configures openView.
+	"github.com/NadafMM/kubectl-shell/internal/kube/live"
+	"github.com/NadafMM/kubectl-shell/internal/kube/plan"
 )
 
-// ViewOptions configures openView.
 type ViewOptions struct {
 	Board        Board
 	All          bool
 	Yes          bool
 	TypedConfirm bool
-	Reload       func(all bool, ns string) (Cluster, bool)
+	Reload       func(all bool, ns string) (kube.Cluster, bool)
 	Stdout       io.Writer
 	Stdin        *os.File
 	StdoutFile   *os.File
 	ForcePlain   bool
-	Policy       *Policy
+	Policy       *kube.Policy
 }
 
 func lookupText(verb string, row Row) string {
@@ -34,7 +38,7 @@ func lookupText(verb string, row Row) string {
 	if row.NS != "" {
 		args = append(args, "-n", row.NS)
 	}
-	_, stdout, stderr := CaptureLive(args)
+	_, stdout, stderr := live.CaptureLive(args)
 	text := stdout
 	if strings.TrimSpace(text) == "" {
 		text = stderr
@@ -45,37 +49,37 @@ func lookupText(verb string, row Row) string {
 	return strings.TrimRight(text, " \t\r\n")
 }
 
-func runViewDelete(plan Plan, yes bool, policy *Policy, actor string) string {
+func runViewDelete(plan kube.Plan, yes bool, policy *kube.Policy, actor string) string {
 	started := time.Now()
-	argv := KubectlArgs(plan.Command)
-	auth := Authorize(AuthRequest{
+	argv := kube.KubectlArgs(plan.Command)
+	auth := kube.Authorize(kube.AuthRequest{
 		Plan: plan, Argv: argv, Policy: policy, Yes: yes,
 		PolicyContext: plan.Context,
-	}, func(planID string, expect PlanExpect) (bool, string) {
-		return ConsumePlan(planID, expect, time.Now())
+	}, func(planID string, expect kube.PlanExpect) (bool, string) {
+		return kube.ConsumePlan(planID, expect, time.Now())
 	})
 	if !auth.OK {
-		if AuditEnabled(policy) {
-			AppendAudit(AuditEntry{
-				ID: NewAuditId(), Timestamp: time.Now().UTC().Format(time.RFC3339),
+		if kube.AuditEnabled(policy) {
+			kube.AppendAudit(kube.AuditEntry{
+				ID: kube.NewAuditId(), Timestamp: time.Now().UTC().Format(time.RFC3339),
 				Actor: actor, Context: plan.Context, Namespace: plan.Namespace,
-				Argv: RedactArgv(argv), Risk: plan.Risk, Decision: auth.AuditDecision,
+				Argv: kube.RedactArgv(argv), Risk: plan.Risk, Decision: auth.AuditDecision,
 				Approver: "none",
 			}, 0)
 		}
 		return auth.Refuse
 	}
 	// View already collected y/N when yes is false; RequireConfirm is treated as armed.
-	code, stdout, stderr := CaptureLive(argv)
-	if AuditEnabled(policy) {
+	code, stdout, stderr := live.CaptureLive(argv)
+	if kube.AuditEnabled(policy) {
 		exit := code
-		AppendAudit(AuditEntry{
-			ID:         NewAuditId(),
+		kube.AppendAudit(kube.AuditEntry{
+			ID:         kube.NewAuditId(),
 			Timestamp:  time.Now().UTC().Format(time.RFC3339),
 			Actor:      actor,
 			Context:    plan.Context,
 			Namespace:  plan.Namespace,
-			Argv:       RedactArgv(argv),
+			Argv:       kube.RedactArgv(argv),
 			Risk:       plan.Risk,
 			Decision:   "executed",
 			Approver:   auth.Approver,
@@ -141,7 +145,7 @@ func openTTY(stdin *os.File) (*os.File, func()) {
 	if stdin == nil {
 		stdin = os.Stdin
 	}
-	f, err := OpenTTY()
+	f, err := kube.OpenTTY()
 	if err != nil {
 		return stdin, func() {}
 	}
@@ -152,7 +156,7 @@ func openTTY(stdin *os.File) (*os.File, func()) {
 }
 
 // OpenView shows the resource table. Without a TTY it prints TableText and returns.
-func OpenView(clusterIn Cluster, options ViewOptions) Cluster {
+func OpenView(clusterIn kube.Cluster, options ViewOptions) kube.Cluster {
 	stdout := options.Stdout
 	if stdout == nil {
 		stdout = os.Stdout
@@ -174,9 +178,9 @@ func OpenView(clusterIn Cluster, options ViewOptions) Cluster {
 
 	cluster := clusterIn
 	var text []string
-	var pendingDelete *Plan
+	var pendingDelete *kube.Plan
 	nsCursor := 0
-	currentNS := NamespaceOf(cluster)
+	currentNS := kube.NamespaceOf(cluster)
 	for i, item := range cluster.Namespaces {
 		if item.Name == currentNS {
 			nsCursor = i
@@ -369,17 +373,17 @@ func OpenView(clusterIn Cluster, options ViewOptions) Cluster {
 				}
 				if effect.Type == "arm-delete" {
 					if effect.Index >= 0 && effect.Index < len(list) {
-						planned := PlanCommand(DeleteEngineLine(list[effect.Index]), cluster)
+						planned := plan.PlanCommand(DeleteEngineLine(list[effect.Index]), cluster)
 						pendingDelete = &planned
 						state.Message = planned.Risk + " risk: " + planned.Summary + "  [y/N]"
 					}
 				}
 				if effect.Type == "delete" {
-					var planned *Plan
+					var planned *kube.Plan
 					if pendingDelete != nil {
 						planned = pendingDelete
 					} else if effect.Index >= 0 && effect.Index < len(list) {
-						p := PlanCommand(DeleteEngineLine(list[effect.Index]), cluster)
+						p := plan.PlanCommand(DeleteEngineLine(list[effect.Index]), cluster)
 						planned = &p
 					}
 					pendingDelete = nil

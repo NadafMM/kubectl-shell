@@ -1,21 +1,23 @@
-package kube
+package mcp
 
 import (
 	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/NadafMM/kubectl-shell/internal/kube"
 	"io"
 	"strconv"
 	"strings"
 	"time"
+
+	// McpRpc is one JSON-RPC request on the MCP stream.
+	"github.com/NadafMM/kubectl-shell/internal/kube/live"
+	"github.com/NadafMM/kubectl-shell/internal/kube/plan"
 )
 
 const mcpProtocolVersion = "2024-11-05"
 
-var mcpDefaultAllow = []string{"get", "describe", "logs", "plan"}
-
-// McpRpc is one JSON-RPC request on the MCP stream.
 type McpRpc struct {
 	JSONRPC string `json:"jsonrpc"`
 	ID      any    `json:"id"`
@@ -37,25 +39,25 @@ func mcpToolResult(id any, text string, isError bool) map[string]any {
 	}
 }
 
-func mcpPolicy() *Policy {
-	policy, errMsg := ReadPolicy(PolicyFile(true, "", ""))
+func mcpPolicy() *kube.Policy {
+	policy, errMsg := kube.ReadPolicy(kube.PolicyFile(true, "", ""))
 	if errMsg != "" {
 		return nil
 	}
 	return policy
 }
 
-func mcpRecord(policy *Policy, cluster Cluster, argv []string, risk, decision string, exitCode *int, started time.Time, approver string) {
-	if !AuditEnabled(policy) {
+func mcpRecord(policy *kube.Policy, cluster kube.Cluster, argv []string, risk, decision string, exitCode *int, started time.Time, approver string) {
+	if !kube.AuditEnabled(policy) {
 		return
 	}
-	AppendAudit(AuditEntry{
-		ID:         NewAuditId(),
+	kube.AppendAudit(kube.AuditEntry{
+		ID:         kube.NewAuditId(),
 		Timestamp:  time.Now().UTC().Format(time.RFC3339),
 		Actor:      "mcp",
 		Context:    cluster.Current,
-		Namespace:  NamespaceOf(cluster),
-		Argv:       RedactArgv(argv),
+		Namespace:  kube.NamespaceOf(cluster),
+		Argv:       kube.RedactArgv(argv),
 		Risk:       risk,
 		Decision:   decision,
 		Approver:   approver,
@@ -64,18 +66,11 @@ func mcpRecord(policy *Policy, cluster Cluster, argv []string, risk, decision st
 	}, 0)
 }
 
-func mcpPlanned(command string, cluster Cluster) (Plan, []string) {
-	view := ToEngine(command, len(command), "repl")
-	planned := PlanCommand(view.Line, cluster)
-	argv := CommandArgs(view.Line, nil)
+func mcpPlanned(command string, cluster kube.Cluster) (kube.Plan, []string) {
+	view := kube.ToEngine(command, len(command), "repl")
+	planned := plan.PlanCommand(view.Line, cluster)
+	argv := kube.CommandArgs(view.Line, nil)
 	return planned, argv
-}
-
-func mcpAllow(policy *Policy) []string {
-	if policy != nil && policy.Agents != nil && len(policy.Agents.Allow) > 0 {
-		return policy.Agents.Allow
-	}
-	return append([]string{}, mcpDefaultAllow...)
 }
 
 func mcpTools() []map[string]any {
@@ -121,7 +116,7 @@ func mcpTools() []map[string]any {
 }
 
 // HandleMcpRpc answers one MCP JSON-RPC message. Notifications (null id) return nil.
-func HandleMcpRpc(message McpRpc, cluster Cluster, version string) any {
+func HandleMcpRpc(message McpRpc, cluster kube.Cluster, version string) any {
 	if message.ID == nil {
 		return nil
 	}
@@ -163,12 +158,12 @@ func HandleMcpRpc(message McpRpc, cluster Cluster, version string) any {
 		}
 	}
 	active := mcpPolicy()
-	rule := RuleFor(active, cluster.Current)
-	allow := mcpAllow(active)
+	rule := kube.RuleFor(active, cluster.Current)
+	allow := kube.McpAllow(active)
 	if name == "kube_context" {
 		payload, _ := json.Marshal(map[string]any{
 			"context":   cluster.Current,
-			"namespace": NamespaceOf(cluster),
+			"namespace": kube.NamespaceOf(cluster),
 			"guarded":   rule.Mode == "guarded",
 			"confirm":   rule.Confirm,
 			"allow":     allow,
@@ -182,40 +177,41 @@ func HandleMcpRpc(message McpRpc, cluster Cluster, version string) any {
 	planned, argv := mcpPlanned(command, cluster)
 	started := time.Now()
 	if name == "kube_plan" {
-		blast := BlastRadius(planned, argv, func(kubectl []string) KubectlJSONResult {
-			return RunJson(kubectl, 3000)
+		blast := plan.BlastRadius(planned, argv, func(kubectl []string) live.KubectlJSONResult {
+			return live.RunJson(kubectl, 3000)
 		}, func() int64 { return time.Now().UnixMilli() })
-		planID, _ := MintPlan(PlanExpect{Context: planned.Context, Namespace: planned.Namespace, Argv: argv}, time.Now())
+		planID, _ := kube.MintPlan(kube.PlanExpect{Context: planned.Context, Namespace: planned.Namespace, Argv: argv}, time.Now())
 		zero := 0
 		mcpRecord(active, cluster, argv, planned.Risk, "planned", &zero, started, "none")
 		type planPayload struct {
-			Plan
-			Blast  Blast  `json:"blast"`
-			PlanID string `json:"planId"`
-			Text   string `json:"text"`
+			kube.Plan
+
+			Blast  plan.Blast `json:"blast"`
+			PlanID string     `json:"planId"`
+			Text   string     `json:"text"`
 		}
-		raw, _ := json.Marshal(planPayload{Plan: planned, Blast: blast, PlanID: planID, Text: FormatBlast(blast)})
+		raw, _ := json.Marshal(planPayload{Plan: planned, Blast: blast, PlanID: planID, Text: plan.FormatBlast(blast)})
 		return mcpToolResult(id, string(raw), false)
 	}
 	if name != "kube_execute" {
 		return mcpToolResult(id, "unknown tool", true)
 	}
 	planID, _ := args["planId"].(string)
-	auth := Authorize(AuthRequest{
+	auth := kube.Authorize(kube.AuthRequest{
 		Plan: planned, Argv: argv, Policy: active, Agent: true, MCP: true,
 		PlanID: planID, PolicyContext: cluster.Current, Yes: true,
-	}, func(id string, expect PlanExpect) (bool, string) {
-		return ConsumePlan(id, expect, time.Now())
+	}, func(id string, expect kube.PlanExpect) (bool, string) {
+		return kube.ConsumePlan(id, expect, time.Now())
 	})
 	if !auth.OK {
 		mcpRecord(active, cluster, argv, planned.Risk, auth.AuditDecision, nil, started, "none")
 		return mcpToolResult(id, auth.Refuse, true)
 	}
-	code, stdout, stderr := CaptureLive(argv)
-	if SensitiveStdoutKind(argv) != "" {
-		stdout = RedactKubectlStdout(argv, stdout)
+	code, stdout, stderr := live.CaptureLive(argv)
+	if kube.SensitiveStdoutKind(argv) != "" {
+		stdout = kube.RedactKubectlStdout(argv, stdout)
 	} else if planned.Mutating {
-		stdout = RedactStdoutPayload(stdout)
+		stdout = kube.RedactStdoutPayload(stdout)
 	}
 	mcpRecord(active, cluster, argv, planned.Risk, "executed", &code, started, auth.Approver)
 	text := stdout
@@ -266,7 +262,7 @@ func readMcpFrame(r *bufio.Reader) ([]byte, error) {
 
 // ServeMcp streams Content-Length framed JSON-RPC from in until EOF.
 // It answers initialize before tools/list so a live MCP client can proceed.
-func ServeMcp(cluster Cluster, version string, in io.Reader, out io.Writer) error {
+func ServeMcp(cluster kube.Cluster, version string, in io.Reader, out io.Writer) error {
 	reader := bufio.NewReader(in)
 	for {
 		body, err := readMcpFrame(reader)

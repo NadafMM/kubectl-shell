@@ -1,8 +1,10 @@
-package kube
+package mcp
 
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/NadafMM/kubectl-shell/internal/kube"
+	"github.com/NadafMM/kubectl-shell/internal/kube/live"
 	"io"
 	"os"
 	"path/filepath"
@@ -18,7 +20,7 @@ func TestServeMcpInitialize(t *testing.T) {
 		"method":  "initialize",
 	})
 	var out bytes.Buffer
-	cluster := Cluster{Current: "minikube", Contexts: []Context{{Name: "minikube", Namespace: "default"}}}
+	cluster := kube.Cluster{Current: "minikube", Contexts: []kube.Context{{Name: "minikube", Namespace: "default"}}}
 	if err := ServeMcp(cluster, "0.5.1", bytes.NewReader(frame), &out); err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +32,7 @@ func TestServeMcpInitialize(t *testing.T) {
 func TestServeMcpStreamsInitializeThenToolsList(t *testing.T) {
 	pr, pw := io.Pipe()
 	var out bytes.Buffer
-	cluster := Cluster{Current: "minikube", Contexts: []Context{{Name: "minikube", Namespace: "default"}}}
+	cluster := kube.Cluster{Current: "minikube", Contexts: []kube.Context{{Name: "minikube", Namespace: "default"}}}
 	done := make(chan error, 1)
 	go func() {
 		done <- ServeMcp(cluster, "0.6.0", pr, &out)
@@ -66,7 +68,7 @@ func TestServeMcpStreamsInitializeThenToolsList(t *testing.T) {
 }
 
 func TestHandleMcpToolsListHasInputSchema(t *testing.T) {
-	reply := HandleMcpRpc(McpRpc{JSONRPC: "2.0", ID: 1, Method: "tools/list"}, Cluster{}, "0.6.0")
+	reply := HandleMcpRpc(McpRpc{JSONRPC: "2.0", ID: 1, Method: "tools/list"}, kube.Cluster{}, "0.6.0")
 	raw, _ := json.Marshal(reply)
 	if !strings.Contains(string(raw), `"inputSchema"`) || !strings.Contains(string(raw), `"planId"`) {
 		t.Fatal(string(raw))
@@ -78,14 +80,14 @@ func TestHandleMcpExecuteRequiresPlanID(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("KUBE_SHELL_KUBECTL", "node")
-	t.Setenv("KUBE_SHELL_NODE_SCRIPT", filepath.Join("..", "..", "scripts", "fake-kubectl.mjs"))
+	t.Setenv("KUBE_SHELL_NODE_SCRIPT", filepath.Join("..", "..", "..", "scripts", "fake-kubectl.mjs"))
 	t.Setenv("KUBE_FAKE_FIXTURE", "up")
 	_ = os.MkdirAll(filepath.Join(home, ".kube-shell"), 0o700)
 	_ = os.WriteFile(filepath.Join(home, ".kube-shell", "policy.json"), []byte(`{"agents":{"allow":["get","describe","logs","plan","delete"],"write_requires":"approved-plan"}}`), 0o600)
-	InvalidateLive()
-	t.Cleanup(InvalidateLive)
+	live.InvalidateLive()
+	t.Cleanup(live.InvalidateLive)
 
-	cluster := Cluster{Current: "minikube", Contexts: []Context{{Name: "minikube", Namespace: "default"}}}
+	cluster := kube.Cluster{Current: "minikube", Contexts: []kube.Context{{Name: "minikube", Namespace: "default"}}}
 	reply := HandleMcpRpc(McpRpc{
 		JSONRPC: "2.0",
 		ID:      3,
@@ -106,16 +108,16 @@ func TestHandleMcpPlanAndExecute(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("KUBE_SHELL_KUBECTL", "node")
-	t.Setenv("KUBE_SHELL_NODE_SCRIPT", filepath.Join("..", "..", "scripts", "fake-kubectl.mjs"))
+	t.Setenv("KUBE_SHELL_NODE_SCRIPT", filepath.Join("..", "..", "..", "scripts", "fake-kubectl.mjs"))
 	t.Setenv("KUBE_FAKE_FIXTURE", "up")
 	logPath := filepath.Join(home, "kubectl.log")
 	t.Setenv("KUBE_FAKE_LOG", logPath)
 	_ = os.MkdirAll(filepath.Join(home, ".kube-shell"), 0o700)
 	_ = os.WriteFile(filepath.Join(home, ".kube-shell", "policy.json"), []byte(`{"agents":{"allow":["get","describe","logs","plan","delete"],"write_requires":"approved-plan"}}`), 0o600)
-	InvalidateLive()
-	t.Cleanup(InvalidateLive)
+	live.InvalidateLive()
+	t.Cleanup(live.InvalidateLive)
 
-	cluster := Cluster{Current: "minikube", Contexts: []Context{{Name: "minikube", Namespace: "default"}}, Objects: []KObject{
+	cluster := kube.Cluster{Current: "minikube", Contexts: []kube.Context{{Name: "minikube", Namespace: "default"}}, Objects: []kube.KObject{
 		{Kind: "pod", Name: "worker-0", NS: "default", Status: "Running"},
 	}}
 	planned := HandleMcpRpc(McpRpc{

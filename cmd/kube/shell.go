@@ -8,19 +8,21 @@ import (
 	"strings"
 
 	"github.com/NadafMM/kubectl-shell/internal/kube"
+	kcomplete "github.com/NadafMM/kubectl-shell/internal/kube/complete"
+	"github.com/NadafMM/kubectl-shell/internal/kube/live"
 	"golang.org/x/term"
 )
 
 func bootCluster(opts runOptions, stderr io.Writer) (kube.Cluster, bool) {
 	probe := opts.probeLive
 	if probe == nil {
-		probe = kube.ProbeLive
+		probe = live.ProbeLive
 	}
 	if !probe() {
 		fmt.Fprintln(stderr, "kubectl could not reach a cluster. kube only runs against a reachable cluster.")
 		return kube.Cluster{}, false
 	}
-	cluster, ok := kube.LiveCluster("kubectl")
+	cluster, ok := live.LiveCluster("kubectl")
 	if !ok {
 		fmt.Fprintln(stderr, "kubectl could not reach a cluster. kube only runs against a reachable cluster.")
 		return kube.Cluster{}, false
@@ -99,8 +101,8 @@ func startRepl(host session, stdout, stderr io.Writer, opts runOptions) int {
 
 	// Ignore SIGINT in the editor so Ctrl+C is a key (0x03). RunLive/CaptureLive
 	// temporarily restore the default so child kubectl (logs -f, exec, …) can stop.
-	kube.SetREPLInterruptIgnore(true)
-	defer kube.SetREPLInterruptIgnore(false)
+	live.SetREPLInterruptIgnore(true)
+	defer live.SetREPLInterruptIgnore(false)
 
 	history := kube.LoadHistory()
 	state, err := term.MakeRaw(int(os.Stdin.Fd()))
@@ -131,7 +133,7 @@ func startRepl(host session, stdout, stderr io.Writer, opts runOptions) int {
 		// Leave raw mode while kubectl / confirms run so children see a normal TTY.
 		_ = term.Restore(int(os.Stdin.Fd()), state)
 		result := runUserLine(line, cluster, lh)
-		kube.SetREPLInterruptIgnore(true)
+		live.SetREPLInterruptIgnore(true)
 		_, _ = term.MakeRaw(int(os.Stdin.Fd()))
 		cluster = result.cluster
 		if result.output == "\x1bc" {
@@ -277,11 +279,11 @@ func (e *lineEditor) complete(prompt string) {
 	line := string(e.buf)
 	cursor := len([]byte(string(e.buf[:e.cursor])))
 	view := kube.ToEngine(line, cursor, "repl")
-	cluster, ok := kube.LiveCluster(view.Line)
+	cluster, ok := live.LiveCluster(view.Line)
 	if !ok {
 		cluster = kube.Cluster{}
 	}
-	found := kube.Complete(view.Line, view.Cursor, cluster)
+	found := kcomplete.Complete(view.Line, view.Cursor, cluster)
 	start := found.Start - view.Delta
 	end := found.End - view.Delta
 	if start < 0 {

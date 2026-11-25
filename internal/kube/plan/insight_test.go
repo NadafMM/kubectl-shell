@@ -1,12 +1,13 @@
-package kube
+package plan
 
 import (
+	"github.com/NadafMM/kubectl-shell/internal/kube"
 	"strings"
 	"testing"
 )
 
 func TestPlanDeletePod(t *testing.T) {
-	plan := PlanCommand("kubectl delete pod checkout", InitialCluster())
+	plan := PlanCommand("kubectl delete pod checkout", kube.InitialCluster())
 	if plan.Risk != "high" || plan.Verb != "delete" || plan.Namespace != "default" || plan.Context != "minikube" || !plan.Mutating {
 		t.Fatalf("%#v", plan)
 	}
@@ -16,7 +17,7 @@ func TestPlanDeletePod(t *testing.T) {
 }
 
 func TestPlanRisks(t *testing.T) {
-	cluster := InitialCluster()
+	cluster := kube.InitialCluster()
 	high := []string{
 		"kubectl drain node-1",
 		"kubectl rollout undo deployment/api",
@@ -73,7 +74,7 @@ func TestPlanRisks(t *testing.T) {
 }
 
 func TestPlanRevealingSummaries(t *testing.T) {
-	cluster := InitialCluster()
+	cluster := kube.InitialCluster()
 	if !strings.Contains(PlanCommand("kubectl get secret token -o yaml", cluster).Summary, "may print Secret data") {
 		t.Fatal("yaml secret")
 	}
@@ -107,7 +108,7 @@ func TestPlanRevealingSummaries(t *testing.T) {
 }
 
 func TestAdviseNamesCrashingPod(t *testing.T) {
-	advice := Advise("why is worker-0 crashing", InitialCluster())
+	advice := Advise("why is worker-0 crashing", kube.InitialCluster())
 	if !strings.Contains(advice.Why, "worker-0 is CrashLoopBackOff in default") {
 		t.Fatal(advice.Why)
 	}

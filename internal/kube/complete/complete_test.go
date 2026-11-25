@@ -1,13 +1,14 @@
-package kube
+package complete
 
 import (
+	"github.com/NadafMM/kubectl-shell/internal/kube"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func hasValue(items []Candidate, value string) bool {
+func hasValue(items []kube.Candidate, value string) bool {
 	for _, item := range items {
 		if item.Value == value {
 			return true
@@ -17,7 +18,7 @@ func hasValue(items []Candidate, value string) bool {
 }
 
 func TestEmptyLineOffersView(t *testing.T) {
-	found := Complete("", 0, InitialCluster())
+	found := Complete("", 0, kube.InitialCluster())
 	if !hasValue(found.Candidates, "view") {
 		t.Fatal(found.Candidates)
 	}
@@ -25,7 +26,7 @@ func TestEmptyLineOffersView(t *testing.T) {
 
 func TestViewCompletesDeploy(t *testing.T) {
 	line := "view "
-	found := Complete(line, len(line), InitialCluster())
+	found := Complete(line, len(line), kube.InitialCluster())
 	if !hasValue(found.Candidates, "deploy") {
 		t.Fatal(found.Candidates)
 	}
@@ -33,7 +34,7 @@ func TestViewCompletesDeploy(t *testing.T) {
 
 func TestGetPodsCompletesWorker(t *testing.T) {
 	line := "kubectl get pods "
-	found := Complete(line, len(line), InitialCluster())
+	found := Complete(line, len(line), kube.InitialCluster())
 	if !hasValue(found.Candidates, "worker-0") {
 		t.Fatal(found.Candidates)
 	}
@@ -41,7 +42,7 @@ func TestGetPodsCompletesWorker(t *testing.T) {
 
 func TestImageCompletionDoesNotInvent(t *testing.T) {
 	line := "kubectl run web --image="
-	found := Complete(line, len(line), InitialCluster())
+	found := Complete(line, len(line), kube.InitialCluster())
 	for _, item := range found.Candidates {
 		if strings.Contains(item.Value, "nginx") {
 			t.Fatal(item)
@@ -51,7 +52,7 @@ func TestImageCompletionDoesNotInvent(t *testing.T) {
 
 func TestLabelCompletion(t *testing.T) {
 	line := "kubectl get pods -l "
-	found := Complete(line, len(line), InitialCluster())
+	found := Complete(line, len(line), kube.InitialCluster())
 	if !hasValue(found.Candidates, "app=worker") {
 		t.Fatal(found.Candidates)
 	}
@@ -65,7 +66,7 @@ func TestResolveResourceKinds(t *testing.T) {
 		"customresourcedefinitions": "customresourcedefinition",
 	}
 	for name, kind := range checks {
-		got, ok := ResolveResource(name)
+		got, ok := kube.ResolveResource(name)
 		if !ok || got.Kind != kind {
 			t.Fatalf("%s -> %#v", name, got)
 		}
@@ -78,7 +79,7 @@ func TestCatalogKindsDoNotBorrowPodNames(t *testing.T) {
 		"priorityclasses", "customresourcedefinitions", "endpoints", "storageclasses",
 	} {
 		line := "kubectl get " + name + " "
-		found := Complete(line, len(line), InitialCluster())
+		found := Complete(line, len(line), kube.InitialCluster())
 		if hasValue(found.Candidates, "worker-0") {
 			t.Fatal(name)
 		}
@@ -91,8 +92,8 @@ func TestCatalogKindsDoNotBorrowPodNames(t *testing.T) {
 }
 
 func TestNetworkPolicyCompletesItsOwnName(t *testing.T) {
-	cluster := InitialCluster()
-	cluster.Objects = append(cluster.Objects, KObject{
+	cluster := kube.InitialCluster()
+	cluster.Objects = append(cluster.Objects, kube.KObject{
 		Kind: "networkpolicy", Name: "allow-web", NS: "default", Age: "1d", Labels: map[string]string{},
 	})
 	line := "kubectl get networkpolicies "
@@ -103,8 +104,8 @@ func TestNetworkPolicyCompletesItsOwnName(t *testing.T) {
 }
 
 func TestStorageClassOutsideNamespace(t *testing.T) {
-	cluster := InitialCluster()
-	cluster.Objects = append(cluster.Objects, KObject{
+	cluster := kube.InitialCluster()
+	cluster.Objects = append(cluster.Objects, kube.KObject{
 		Kind: "storageclass", Name: "standard", NS: "", Age: "1d", Labels: map[string]string{},
 	})
 	line := "kubectl get storageclasses "
@@ -125,11 +126,11 @@ func TestManifestCompletion(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "k8s", "web.yaml"), []byte("kind: Service\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	top := ManifestCandidates("", root)
+	top := kube.ManifestCandidates("", root)
 	if !hasValue(top, "deploy.yaml") || !hasValue(top, "k8s/") {
 		t.Fatal(top)
 	}
-	nested := ManifestCandidates("k8s/w", root)
+	nested := kube.ManifestCandidates("k8s/w", root)
 	if len(nested) != 1 || nested[0].Value != "k8s/web.yaml" {
 		t.Fatal(nested)
 	}
@@ -142,7 +143,7 @@ func TestManifestCompletion(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chdir(previous) })
 	line := "kubectl apply -f "
-	found := Complete(line, len(line), InitialCluster())
+	found := Complete(line, len(line), kube.InitialCluster())
 	if !hasValue(found.Candidates, "deploy.yaml") || hasValue(found.Candidates, "./deploy.yaml") {
 		t.Fatal(found.Candidates)
 	}
@@ -157,17 +158,17 @@ func TestSymlinkManifestIsSkipped(t *testing.T) {
 	if err := os.Symlink(target, filepath.Join(root, "deploy.yaml")); err != nil {
 		t.Fatal(err)
 	}
-	if hasValue(ManifestCandidates("", root), "deploy.yaml") {
+	if hasValue(kube.ManifestCandidates("", root), "deploy.yaml") {
 		t.Fatal("symlink should not be a candidate")
 	}
 }
 
 func TestCompletionValueDropsMetacharacters(t *testing.T) {
-	if got, ok := CompletionValue("deploy.yaml"); !ok || got != "deploy.yaml" {
+	if got, ok := kube.CompletionValue("deploy.yaml"); !ok || got != "deploy.yaml" {
 		t.Fatal(got, ok)
 	}
 	for _, value := range []string{"foo$(id).yaml", "foo`id`.yaml", "foo;id.yaml", "foo|id.yaml", "foo\nid.yaml"} {
-		if _, ok := CompletionValue(value); ok {
+		if _, ok := kube.CompletionValue(value); ok {
 			t.Fatal(value)
 		}
 	}

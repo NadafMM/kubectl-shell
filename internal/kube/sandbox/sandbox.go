@@ -1,7 +1,8 @@
-package kube
+package sandbox
 
 import (
 	"bytes"
+	"github.com/NadafMM/kubectl-shell/internal/kube/live"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -94,7 +95,7 @@ func kindCmd() string {
 }
 
 func sandboxKubectlCmd() string {
-	return KubectlBin()
+	return live.KubectlBin()
 }
 
 func childEnv(kubeconfig string) []string {

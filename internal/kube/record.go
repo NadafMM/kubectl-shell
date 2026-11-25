@@ -94,7 +94,7 @@ func StartRecord(file string, context, namespace, started string) string {
 	}
 	active = file
 	if _, err := os.Stat(file); err != nil {
-		_ = writePrivate(file, "# kube session\n\n- context: "+context+"\n- namespace: "+namespace+"\n- started: "+started+"\n")
+		_ = WritePrivate(file, "# kube session\n\n- context: "+context+"\n- namespace: "+namespace+"\n- started: "+started+"\n")
 	}
 	return file
 }
@@ -140,5 +140,5 @@ func NoteRan(entry RunbookEntry) {
 	if err != nil {
 		previous = nil
 	}
-	_ = writePrivate(file, string(previous)+strings.Join(lines, "\n"))
+	_ = WritePrivate(file, string(previous)+strings.Join(lines, "\n"))
 }

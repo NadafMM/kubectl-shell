@@ -88,7 +88,8 @@ func shellMetaFirstWord(first string) bool {
 	return false
 }
 
-func shellCommandCandidates(prefixToken string) []Candidate {
+// ShellCommandCandidates completes shell meta commands (ns, ctx, help, …).
+func ShellCommandCandidates(prefixToken string) []Candidate {
 	p := strings.ToLower(prefixToken)
 	var out []Candidate
 	for _, command := range ShellCommands {

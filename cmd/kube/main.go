@@ -11,6 +11,13 @@ import (
 	"time"
 
 	"github.com/NadafMM/kubectl-shell/internal/kube"
+	kcomplete "github.com/NadafMM/kubectl-shell/internal/kube/complete"
+	"github.com/NadafMM/kubectl-shell/internal/kube/live"
+	"github.com/NadafMM/kubectl-shell/internal/kube/mcp"
+	kplan "github.com/NadafMM/kubectl-shell/internal/kube/plan"
+	ksandbox "github.com/NadafMM/kubectl-shell/internal/kube/sandbox"
+	"github.com/NadafMM/kubectl-shell/internal/kube/undo"
+	"github.com/NadafMM/kubectl-shell/internal/kube/view"
 )
 
 // version is set at link time via -X main.version=… (see Makefile / scripts/packaging).
@@ -22,11 +29,11 @@ type runOptions struct {
 	confirm     func(prompt string) bool
 	stdinTTY    bool
 	stdin       io.Reader
-	runLive     func(args []string, options kube.RunLiveOptions) int
+	runLive     func(args []string, options live.RunLiveOptions) int
 	probeLive   func() bool
 	agent       *bool
 	forcePlain  bool
-	sandboxHost *kube.SandboxHost
+	sandboxHost *ksandbox.SandboxHost
 }
 
 type session struct {
@@ -245,11 +252,11 @@ func complete(args []string, stdout io.Writer) int {
 	if view.Skip {
 		return 0
 	}
-	cluster, ok := kube.LiveCluster(view.Line)
+	cluster, ok := live.LiveCluster(view.Line)
 	if !ok {
 		cluster = kube.Cluster{}
 	}
-	found := kube.Complete(view.Line, view.Cursor, cluster)
+	found := kcomplete.Complete(view.Line, view.Cursor, cluster)
 	var values []kube.Candidate
 	for _, item := range found.Candidates {
 		value, ok := kube.CompletionValue(item.Value)
@@ -301,7 +308,7 @@ func stripJSON(args []string) (bool, []string) {
 }
 
 func clusterFor(line string) kube.Cluster {
-	cluster, ok := kube.LiveCluster(line)
+	cluster, ok := live.LiveCluster(line)
 	if !ok {
 		return kube.Cluster{}
 	}
@@ -332,20 +339,20 @@ func planCommand(args []string, stdout, stderr io.Writer) int {
 		line = "kubectl " + line
 	}
 	cluster := clusterFor(line)
-	plan := kube.PlanCommand(line, cluster)
+	plan := kplan.PlanCommand(line, cluster)
 	argv := append([]string{}, rest...)
 	if len(argv) > 0 && (argv[0] == "kubectl" || argv[0] == "k") {
 		argv = argv[1:]
 	}
-	var blast *kube.Blast
+	var blast *kplan.Blast
 	if wantsBlast(plan) {
 		report := liveBlast(plan, argv)
 		blast = &report
 	}
 	if !asJSON {
-		text := kube.FormatPlan(plan)
+		text := kplan.FormatPlan(plan)
 		if blast != nil {
-			if extra := kube.FormatBlast(*blast); extra != "" {
+			if extra := kplan.FormatBlast(*blast); extra != "" {
 				text += "\n" + extra
 			}
 		}
@@ -354,8 +361,8 @@ func planCommand(args []string, stdout, stderr io.Writer) int {
 	}
 	type payload struct {
 		kube.Plan
-		Blast  *kube.Blast `json:"blast,omitempty"`
-		PlanID string      `json:"planId,omitempty"`
+		Blast  *kplan.Blast `json:"blast,omitempty"`
+		PlanID string       `json:"planId,omitempty"`
 	}
 	out := payload{Plan: plan, Blast: blast}
 	id, err := kube.MintPlan(kube.PlanExpect{Context: plan.Context, Namespace: plan.Namespace, Argv: argv}, time.Now())
@@ -389,23 +396,23 @@ func wantsBlast(plan kube.Plan) bool {
 	return plan.Verb == "delete" || plan.Verb == "drain" || (plan.Verb == "scale" && plan.Risk == "high")
 }
 
-func liveBlast(plan kube.Plan, argv []string) kube.Blast {
+func liveBlast(plan kube.Plan, argv []string) kplan.Blast {
 	started := time.Now().UnixMilli()
-	getJSON := func(args []string) kube.KubectlJSONResult {
-		left := kube.BlastBudgetMS - (time.Now().UnixMilli() - started)
+	getJSON := func(args []string) live.KubectlJSONResult {
+		left := kplan.BlastBudgetMS - (time.Now().UnixMilli() - started)
 		if left <= 0 {
-			return kube.KubectlJSONResult{OK: false, Error: "timed out"}
+			return live.KubectlJSONResult{OK: false, Error: "timed out"}
 		}
-		return kube.RunJson(args, int(left))
+		return live.RunJson(args, int(left))
 	}
-	return kube.BlastRadius(plan, argv, getJSON, func() int64 { return time.Now().UnixMilli() })
+	return kplan.BlastRadius(plan, argv, getJSON, func() int64 { return time.Now().UnixMilli() })
 }
 
 func askCommand(args []string, stdout, stderr io.Writer) int {
 	asJSON, rest := stripJSON(args)
 	question := strings.Trim(strings.Join(rest, " "), `"'`)
 	cluster := clusterFor("kubectl")
-	advice := kube.AskAdvice(question, cluster, nil)
+	advice := kplan.AskAdvice(question, cluster, nil)
 	if asJSON {
 		encoded, err := json.Marshal(advice)
 		if err != nil {
@@ -415,7 +422,7 @@ func askCommand(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "%s\n", encoded)
 		return 0
 	}
-	fmt.Fprintln(stdout, kube.FormatAdvice(advice))
+	fmt.Fprintln(stdout, kplan.FormatAdvice(advice))
 	return 0
 }
 
@@ -441,7 +448,7 @@ func auditCommand(args []string, stdout, stderr io.Writer) int {
 func runKubectl(argv []string, host session, stdout, stderr io.Writer, opts runOptions) int {
 	probe := opts.probeLive
 	if probe == nil {
-		probe = kube.ProbeLive
+		probe = live.ProbeLive
 	}
 	if !probe() {
 		fmt.Fprintln(stderr, "kubectl could not reach a cluster. kube only runs against a reachable cluster.")
@@ -455,7 +462,7 @@ func runKubectl(argv []string, host session, stdout, stderr io.Writer, opts runO
 	started := time.Now()
 	auditID := kube.NewAuditId()
 	cluster := clusterFor(line)
-	plan := kube.PlanCommand(line, cluster)
+	plan := kplan.PlanCommand(line, cluster)
 	actor := "human-cli"
 	if host.agent {
 		actor = "agent-cli"
@@ -487,9 +494,9 @@ func runKubectl(argv []string, host session, stdout, stderr io.Writer, opts runO
 		return 1
 	}
 	if auth.RequireConfirm {
-		text := kube.FormatPlan(plan)
+		text := kplan.FormatPlan(plan)
 		if wantsBlast(plan) {
-			if extra := kube.FormatBlast(liveBlast(plan, argv)); extra != "" {
+			if extra := kplan.FormatBlast(liveBlast(plan, argv)); extra != "" {
 				blastText = extra
 				text += "\n" + extra
 			}
@@ -516,13 +523,13 @@ func runKubectl(argv []string, host session, stdout, stderr io.Writer, opts runO
 		}
 	}
 	if !dryRun {
-		kube.RememberUndo(argv, cluster, auditID, time.Now())
+		undo.RememberUndo(argv, cluster, auditID, time.Now())
 	}
 	runner := opts.runLive
 	if runner == nil {
-		runner = kube.RunLive
+		runner = live.RunLive
 	}
-	code := runner(argv, kube.RunLiveOptions{InheritStdin: true})
+	code := runner(argv, live.RunLiveOptions{InheritStdin: true})
 	decision := "executed"
 	if dryRun {
 		decision = "dry-run"
@@ -545,13 +552,13 @@ func runKubectl(argv []string, host session, stdout, stderr io.Writer, opts runO
 func mcpCommand(host session, stdout, stderr io.Writer, opts runOptions) int {
 	probe := opts.probeLive
 	if probe == nil {
-		probe = kube.ProbeLive
+		probe = live.ProbeLive
 	}
 	if !probe() {
 		fmt.Fprintln(stderr, "kubectl could not reach a cluster. kube only runs against a reachable cluster.")
 		return 1
 	}
-	cluster, ok := kube.LiveCluster("kubectl")
+	cluster, ok := live.LiveCluster("kubectl")
 	if !ok {
 		fmt.Fprintln(stderr, "kubectl could not reach a cluster. kube only runs against a reachable cluster.")
 		return 1
@@ -560,7 +567,7 @@ func mcpCommand(host session, stdout, stderr io.Writer, opts runOptions) int {
 	if stdin == nil {
 		stdin = os.Stdin
 	}
-	if err := kube.ServeMcp(cluster, version, stdin, stdout); err != nil {
+	if err := mcp.ServeMcp(cluster, version, stdin, stdout); err != nil {
 		fmt.Fprintln(stderr, err.Error())
 		return 1
 	}
@@ -573,7 +580,7 @@ func mcpCommand(host session, stdout, stderr io.Writer, opts runOptions) int {
 func prepareSandbox(sandbox bool, rest []string, stdout, stderr io.Writer, opts runOptions) (next []string, code int, done bool) {
 	host := opts.sandboxHost
 	if host == nil {
-		h := kube.RealSandbox("")
+		h := ksandbox.RealSandbox("")
 		host = &h
 	}
 	if len(rest) > 0 && rest[0] == "sandbox" {
@@ -589,9 +596,9 @@ func prepareSandbox(sandbox bool, rest []string, stdout, stderr io.Writer, opts 
 			var ok bool
 			var message string
 			if action == "up" {
-				ok, message = kube.SandboxUp(*host)
+				ok, message = ksandbox.SandboxUp(*host)
 			} else {
-				ok, message = kube.SandboxDown(*host)
+				ok, message = ksandbox.SandboxDown(*host)
 			}
 			text := message
 			if !strings.HasSuffix(text, "\n") {
@@ -608,7 +615,7 @@ func prepareSandbox(sandbox bool, rest []string, stdout, stderr io.Writer, opts 
 		sandbox = true
 	}
 	if sandbox {
-		config := kube.SandboxKubeconfig(host.Home)
+		config := ksandbox.SandboxKubeconfig(host.Home)
 		if _, err := os.Stat(config); err != nil {
 			fmt.Fprintln(stderr, "kube sandbox is not up. Run kube sandbox up.")
 			return rest, 1, true
@@ -621,7 +628,7 @@ func prepareSandbox(sandbox bool, rest []string, stdout, stderr io.Writer, opts 
 func viewCommand(args []string, host session, stdout, stderr io.Writer, opts runOptions) int {
 	probe := opts.probeLive
 	if probe == nil {
-		probe = kube.ProbeLive
+		probe = live.ProbeLive
 	}
 	if !probe() {
 		fmt.Fprintln(stderr, "kubectl cannot reach the cluster")
@@ -639,12 +646,12 @@ func viewCommand(args []string, host session, stdout, stderr io.Writer, opts run
 			}
 		}
 	}
-	board := kube.BoardFrom(word)
+	board := view.BoardFrom(word)
 	line := "kubectl get pods"
 	if all {
 		line = "kubectl get pods -A"
 	}
-	cluster, ok := kube.LiveCluster(line)
+	cluster, ok := live.LiveCluster(line)
 	if !ok {
 		fmt.Fprintln(stderr, "kubectl cannot describe the current context")
 		return 1
@@ -655,7 +662,7 @@ func viewCommand(args []string, host session, stdout, stderr io.Writer, opts run
 		forcePlain = true
 	}
 	rule := kube.RuleFor(host.policy, cluster.Current)
-	kube.OpenView(cluster, kube.ViewOptions{
+	view.OpenView(cluster, view.ViewOptions{
 		Board:        board,
 		All:          all,
 		Yes:          host.yes,
@@ -665,12 +672,12 @@ func viewCommand(args []string, host session, stdout, stderr io.Writer, opts run
 		StdoutFile:   stdoutFile,
 		Policy:       host.policy,
 		Reload: func(wantAll bool, namespace string) (kube.Cluster, bool) {
-			kube.InvalidateLive()
+			live.InvalidateLive()
 			reloadLine := "kubectl get pods -n " + namespace
 			if wantAll {
 				reloadLine = "kubectl get pods -A"
 			}
-			return kube.LiveCluster(reloadLine)
+			return live.LiveCluster(reloadLine)
 		},
 	})
 	return 0
@@ -679,7 +686,7 @@ func viewCommand(args []string, host session, stdout, stderr io.Writer, opts run
 func undoCommand(args []string, host session, stdout, stderr io.Writer, opts runOptions) int {
 	if len(args) > 0 && args[0] == "list" {
 		lines := make([]string, 0)
-		for _, record := range kube.ListUndo(time.Now()) {
+		for _, record := range undo.ListUndo(time.Now()) {
 			state := "restorable"
 			if record.Refused != "" {
 				state = "not restorable"
@@ -697,12 +704,12 @@ func undoCommand(args []string, host session, stdout, stderr io.Writer, opts run
 		fmt.Fprintln(stderr, "usage: kube undo | kube undo list")
 		return 1
 	}
-	record, ok := kube.LatestUndo(time.Now())
+	record, ok := undo.LatestUndo(time.Now())
 	if !ok {
 		fmt.Fprintln(stdout, "nothing to undo")
 		return 1
 	}
-	if refusal := kube.UndoRefusal(record); refusal != "" {
+	if refusal := undo.UndoRefusal(record); refusal != "" {
 		fmt.Fprintln(stdout, refusal)
 		return 1
 	}
@@ -722,10 +729,10 @@ func undoCommand(args []string, host session, stdout, stderr io.Writer, opts run
 	}
 	runner := opts.runLive
 	if runner == nil {
-		runner = kube.RunLive
+		runner = live.RunLive
 	}
-	restore := kube.RestoreArgs(record)
-	options := kube.RunLiveOptions{InheritStdin: true}
+	restore := undo.RestoreArgs(record)
+	options := live.RunLiveOptions{InheritStdin: true}
 	if len(restore) >= 2 && restore[0] == "apply" && record.Snapshot != nil {
 		options.StdinReader = bytes.NewReader(record.Snapshot)
 		options.InheritStdin = false

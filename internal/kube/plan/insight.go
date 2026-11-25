@@ -1,22 +1,11 @@
-package kube
+package plan
 
 import (
+	"github.com/NadafMM/kubectl-shell/internal/kube"
 	"regexp"
 	"sort"
 	"strings"
 )
-
-type Plan struct {
-	Command       string   `json:"command"`
-	Verb          string   `json:"verb"`
-	Context       string   `json:"context"`
-	Namespace     string   `json:"namespace"`
-	AllNamespaces bool     `json:"allNamespaces"`
-	Targets       []string `json:"targets"`
-	Mutating      bool     `json:"mutating"`
-	Risk          string   `json:"risk"`
-	Summary       string   `json:"summary"`
-}
 
 type Advice struct {
 	Why      string    `json:"why"`
@@ -26,8 +15,8 @@ type Advice struct {
 
 func argsOf(engineLine string) []string {
 	var tokens []string
-	for _, token := range Tokenize(engineLine) {
-		tokens = append(tokens, Unquote(token.Text))
+	for _, token := range kube.Tokenize(engineLine) {
+		tokens = append(tokens, kube.Unquote(token.Text))
 	}
 	if len(tokens) > 0 && (tokens[0] == "kubectl" || tokens[0] == "k") {
 		return tokens[1:]
@@ -97,81 +86,7 @@ func riskOf(verb, sub string, tokens []string) string {
 	return "read"
 }
 
-func outputFormatToken(token string) (string, bool) {
-	switch {
-	case token == "-o" || token == "--output":
-		return "", false
-	case strings.HasPrefix(token, "-o="):
-		return token[3:], true
-	case strings.HasPrefix(token, "--output="):
-		return token[len("--output="):], true
-	default:
-		return "", false
-	}
-}
-
-func isRevealingFormat(format string) bool {
-	switch format {
-	case "yaml", "json", "wide", "template":
-		return true
-	}
-	return strings.HasPrefix(format, "jsonpath") || strings.HasPrefix(format, "go-template") || strings.HasPrefix(format, "custom-columns")
-}
-
-func revealingOutputFormat(tokens []string) bool {
-	if output, ok := FlagValue(tokens, []string{"-o", "--output"}); ok && isRevealingFormat(output) {
-		return true
-	}
-	for _, token := range tokens {
-		if inline, ok := outputFormatToken(token); ok && isRevealingFormat(inline) {
-			return true
-		}
-		if token == "-o=wide" || token == "--output=wide" {
-			return true
-		}
-	}
-	return false
-}
-
-func resourceTokenKind(token string) string {
-	resource, ok := ResolveResource(token)
-	if (ok && resource.Kind == "secret") || token == "secret" || token == "secrets" {
-		return "secret"
-	}
-	if (ok && resource.Kind == "configmap") || token == "configmap" || token == "configmaps" {
-		return "configmap"
-	}
-	return ""
-}
-
-func sensitiveStdoutKind(tokens []string) string {
-	words := PositionalWords(tokens).Words
-	verb := ""
-	if len(words) > 0 {
-		verb = words[0]
-	}
-	if verb == "get" && revealingOutputFormat(tokens) {
-		for i := 1; i < len(words); i++ {
-			if kind := resourceTokenKind(words[i]); kind != "" {
-				return kind
-			}
-		}
-		return ""
-	}
-	if verb == "describe" {
-		second := ""
-		if len(words) > 1 {
-			second = words[1]
-		}
-		return resourceTokenKind(second)
-	}
-	if verb == "config" && len(words) > 1 && words[1] == "view" && hasFlag(tokens, "--raw") {
-		return "kubeconfig"
-	}
-	return ""
-}
-
-func summaryFor(plan Plan, sub string, tokens []string) string {
+func summaryFor(plan kube.Plan, sub string, tokens []string) string {
 	where := plan.Namespace
 	if plan.AllNamespaces {
 		where = "every namespace"
@@ -180,7 +95,7 @@ func summaryFor(plan Plan, sub string, tokens []string) string {
 	if len(plan.Targets) > 0 {
 		what = strings.Join(plan.Targets, ", ")
 	}
-	switch sensitiveStdoutKind(tokens) {
+	switch kube.SensitiveStdoutKind(tokens) {
 	case "secret":
 		return "Reads " + what + " in " + where + ". kubectl may print Secret data on stdout; kube does not redact it unless KUBE_SHELL_REDACT_STDOUT=1 and stdout is not a TTY."
 	case "configmap":
@@ -223,10 +138,10 @@ func summaryFor(plan Plan, sub string, tokens []string) string {
 }
 
 // PlanCommand describes what a kubectl line will touch. It does not run it.
-func PlanCommand(engineLine string, cluster Cluster) Plan {
+func PlanCommand(engineLine string, cluster kube.Cluster) kube.Plan {
 	args := argsOf(engineLine)
-	scope := ScopeOf(args, cluster)
-	parsed := PositionalWords(args)
+	scope := kube.ScopeOf(args, cluster)
+	parsed := kube.PositionalWords(args)
 	verb, sub := "", ""
 	if len(parsed.Words) > 0 {
 		verb = parsed.Words[0]
@@ -234,7 +149,7 @@ func PlanCommand(engineLine string, cluster Cluster) Plan {
 	if len(parsed.Words) > 1 {
 		sub = parsed.Words[1]
 	}
-	resource, hasResource := ResolveResource(sub)
+	resource, hasResource := kube.ResolveResource(sub)
 	var names []string
 	if hasResource {
 		names = parsed.Words[2:]
@@ -272,13 +187,13 @@ func PlanCommand(engineLine string, cluster Cluster) Plan {
 	risk := riskOf(verb, riskSub, args)
 	ns := scope.NS
 	if ns == "" {
-		ns = NamespaceOf(cluster)
+		ns = kube.NamespaceOf(cluster)
 	}
 	command := "kubectl"
 	if len(args) > 0 {
 		command += " " + strings.Join(args, " ")
 	}
-	plan := Plan{
+	plan := kube.Plan{
 		Command: command, Verb: verb, Context: scope.Context,
 		Namespace: ns, AllNamespaces: scope.All, Targets: targets,
 		Mutating: risk != "read", Risk: risk,
@@ -291,7 +206,7 @@ func PlanCommand(engineLine string, cluster Cluster) Plan {
 	return plan
 }
 
-func FormatPlan(plan Plan) string {
+func FormatPlan(plan kube.Plan) string {
 	where := "namespace " + plan.Namespace
 	if plan.AllNamespaces {
 		where = "all namespaces"
@@ -303,7 +218,7 @@ type hit struct {
 	name, kind, ns, status string
 }
 
-func unhealthy(cluster Cluster) (hit, bool) {
+func unhealthy(cluster kube.Cluster) (hit, bool) {
 	pattern := regexp.MustCompile(`(?i)CrashLoop|ImagePull|ErrImage|Error|Pending|BackOff|OOM`)
 	for _, item := range cluster.Objects {
 		if pattern.MatchString(item.Status) {
@@ -317,9 +232,9 @@ func unhealthy(cluster Cluster) (hit, bool) {
 	return hit{}, false
 }
 
-func mentioned(question string, cluster Cluster) (hit, bool) {
+func mentioned(question string, cluster kube.Cluster) (hit, bool) {
 	q := strings.ToLower(question)
-	ranked := append([]KObject{}, cluster.Objects...)
+	ranked := append([]kube.KObject{}, cluster.Objects...)
 	sort.SliceStable(ranked, func(i, j int) bool {
 		return len(ranked[i].Name) > len(ranked[j].Name)
 	})
@@ -335,8 +250,8 @@ func mentioned(question string, cluster Cluster) (hit, bool) {
 	return hit{}, false
 }
 
-func nsSuffix(found hit, ok bool, cluster Cluster) string {
-	if !ok || found.ns == "" || found.ns == NamespaceOf(cluster) {
+func nsSuffix(found hit, ok bool, cluster kube.Cluster) string {
+	if !ok || found.ns == "" || found.ns == kube.NamespaceOf(cluster) {
 		return ""
 	}
 	return " -n " + found.ns
@@ -350,7 +265,7 @@ func podish(found hit, ok bool) string {
 }
 
 // Advise turns a question into kubectl lines. It does not call the network.
-func Advise(question string, cluster Cluster) Advice {
+func Advise(question string, cluster kube.Cluster) Advice {
 	q := strings.ToLower(strings.TrimSpace(question))
 	named, namedOK := mentioned(question, cluster)
 	sick, sickOK := named, namedOK
@@ -371,9 +286,9 @@ func Advise(question string, cluster Cluster) Advice {
 	case q == "":
 		return Advice{Why: "Ask about a pod, a crash, a pending schedule, or the current context.", Commands: []string{"get pods", "get events"}}
 	case regexp.MustCompile(`context|where am i|which cluster`).MatchString(q):
-		return Advice{Why: "Current context is " + cluster.Current + ", namespace " + NamespaceOf(cluster) + ".", Commands: []string{"config current-context", "config get-contexts"}}
+		return Advice{Why: "Current context is " + cluster.Current + ", namespace " + kube.NamespaceOf(cluster) + ".", Commands: []string{"config current-context", "config get-contexts"}}
 	case regexp.MustCompile(`namespace|which ns|what ns`).MatchString(q):
-		return Advice{Why: "Namespace on " + cluster.Current + " is " + NamespaceOf(cluster) + ".", Commands: []string{"get ns", "config view --minify"}}
+		return Advice{Why: "Namespace on " + cluster.Current + " is " + kube.NamespaceOf(cluster) + ".", Commands: []string{"get ns", "config view --minify"}}
 	case regexp.MustCompile(`crash|backoff|restart|oom|not starting|failing`).MatchString(q):
 		return Advice{Why: whyName, Commands: []string{"describe " + kind + " " + name + ns, "logs " + name + " --tail=80" + ns, "get events" + ns}}
 	case regexp.MustCompile(`pending|unschedul|cannot schedule|can't schedule|insufficient`).MatchString(q):

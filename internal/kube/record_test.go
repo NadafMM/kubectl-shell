@@ -97,4 +97,3 @@ func TestSessionPathNamesContext(t *testing.T) {
 		t.Fatal(file)
 	}
 }
-

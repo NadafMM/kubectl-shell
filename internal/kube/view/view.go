@@ -1,6 +1,7 @@
-package kube
+package view
 
 import (
+	"github.com/NadafMM/kubectl-shell/internal/kube"
 	"os"
 	"regexp"
 	"sort"
@@ -79,19 +80,6 @@ func DeleteEngineLine(row Row) string {
 	return strings.Join(parts, " ")
 }
 
-// KubectlArgs drops the leading kubectl/k token from an engine line.
-func KubectlArgs(engineLine string) []string {
-	tokens := Tokenize(engineLine)
-	if len(tokens) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(tokens)-1)
-	for _, token := range tokens[1:] {
-		out = append(out, Unquote(token.Text))
-	}
-	return out
-}
-
 func toneOf(status string) string {
 	if toneBad.MatchString(status) {
 		return "bad"
@@ -105,7 +93,7 @@ func toneOf(status string) string {
 	return "plain"
 }
 
-func objectRow(item KObject) Row {
+func objectRow(item kube.KObject) Row {
 	info := ""
 	if item.Kind == "service" {
 		info = item.SvcType
@@ -146,7 +134,7 @@ func byProblem(a, b Row) bool {
 }
 
 // RowsOf builds the visible rows for a board.
-func RowsOf(cluster Cluster, board Board, ns string, all bool, filter string) []Row {
+func RowsOf(cluster kube.Cluster, board Board, ns string, all bool, filter string) []Row {
 	needle := strings.ToLower(strings.TrimSpace(filter))
 	keep := func(row Row) bool {
 		if needle == "" {
@@ -194,8 +182,8 @@ func RowsOf(cluster Cluster, board Board, ns string, all bool, filter string) []
 }
 
 // TableText is the non-TTY kube view output.
-func TableText(cluster Cluster, board Board, all bool) string {
-	ns := NamespaceOf(cluster)
+func TableText(cluster kube.Cluster, board Board, all bool) string {
+	ns := kube.NamespaceOf(cluster)
 	rows := RowsOf(cluster, board, ns, all, "")
 	var lines []string
 	if all {

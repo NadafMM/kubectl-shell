@@ -2,6 +2,19 @@ package kube
 
 import "strings"
 
+// Plan describes what a kubectl line will touch without running it.
+type Plan struct {
+	Command       string   `json:"command"`
+	Verb          string   `json:"verb"`
+	Context       string   `json:"context"`
+	Namespace     string   `json:"namespace"`
+	AllNamespaces bool     `json:"allNamespaces"`
+	Targets       []string `json:"targets"`
+	Mutating      bool     `json:"mutating"`
+	Risk          string   `json:"risk"`
+	Summary       string   `json:"summary"`
+}
+
 type KObject struct {
 	Kind       string            `json:"kind"`
 	Name       string            `json:"name"`
@@ -153,14 +166,15 @@ func ResolveResource(token string) (Resource, bool) {
 		name = mapped
 	}
 	for _, resource := range Resources {
-		if resource.Name == name || containsString(resource.Short, raw) || resource.Singular == raw {
+		if resource.Name == name || ContainsString(resource.Short, raw) || resource.Singular == raw {
 			return resource, true
 		}
 	}
 	return Resource{}, false
 }
 
-func containsString(items []string, want string) bool {
+// ContainsString reports whether want is in items.
+func ContainsString(items []string, want string) bool {
 	for _, item := range items {
 		if item == want {
 			return true

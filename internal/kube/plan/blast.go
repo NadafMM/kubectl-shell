@@ -1,14 +1,17 @@
-package kube
+package plan
 
 import (
 	"encoding/json"
+	"github.com/NadafMM/kubectl-shell/internal/kube"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	// BlastBudgetMS is the wall-clock budget for blast-radius kubectl calls.
+	"github.com/NadafMM/kubectl-shell/internal/kube/live"
 )
 
-// BlastBudgetMS is the wall-clock budget for blast-radius kubectl calls.
 const BlastBudgetMS = 3000
 
 // BlastObject is one affected namespaced object.
@@ -465,18 +468,18 @@ func withContext(flags []string, context string) []string {
 type target struct {
 	token    string
 	names    []string
-	resource Resource
+	resource kube.Resource
 	hasRes   bool
 	selector string
 	all      bool
 }
 
 func targetOf(args []string) (target, string) {
-	rest := PositionalWords(args).Words
+	rest := kube.PositionalWords(args).Words
 	if len(rest) > 0 {
 		rest = rest[1:]
 	}
-	selector, _ := FlagValue(args, []string{"-l", "--selector"})
+	selector, _ := kube.FlagValue(args, []string{"-l", "--selector"})
 	all := false
 	for _, token := range args {
 		if token == "--all" || token == "--all=true" {
@@ -510,14 +513,14 @@ func targetOf(args []string) (target, string) {
 			return target{}, "mixed"
 		}
 		token := kinds[0]
-		res, ok := ResolveResource(token)
+		res, ok := kube.ResolveResource(token)
 		return target{token: token, names: names, resource: res, hasRes: ok, all: false}, "ok"
 	}
 	if len(rest) == 0 {
 		return target{}, "null"
 	}
 	token := rest[0]
-	res, ok := ResolveResource(token)
+	res, ok := kube.ResolveResource(token)
 	names := append([]string{}, rest[1:]...)
 	if !all && selector == "" && len(names) == 0 {
 		return target{}, "null"
@@ -539,7 +542,7 @@ type podRef struct {
 }
 
 type fetch struct {
-	getJSON func([]string) KubectlJSONResult
+	getJSON func([]string) live.KubectlJSONResult
 	now     func() int64
 	started int64
 }
@@ -556,13 +559,13 @@ func jsonArgs(resource string, middle, scope []string) []string {
 	return args
 }
 
-func fetchJSON(f fetch, args []string) (KubectlJSONResult, bool) {
+func fetchJSON(f fetch, args []string) (live.KubectlJSONResult, bool) {
 	if expired(f) {
-		return KubectlJSONResult{}, false
+		return live.KubectlJSONResult{}, false
 	}
 	result := f.getJSON(args)
 	if expired(f) {
-		return KubectlJSONResult{}, false
+		return live.KubectlJSONResult{}, false
 	}
 	return result, true
 }
@@ -1166,7 +1169,7 @@ func ownerOf(item kubeObject, namespace, name string) []BlastOwner {
 	}}
 }
 
-func fromItems(items []kubeObject, resource Resource, hasRes bool, a asked, f fetch, fallbackNS string, reuse bool) Blast {
+func fromItems(items []kubeObject, resource kube.Resource, hasRes bool, a asked, f fetch, fallbackNS string, reuse bool) Blast {
 	var owners []BlastOwner
 	var objects []BlastObject
 	for _, item := range items {
@@ -1294,7 +1297,7 @@ func isDaemon(item kubeObject) bool {
 	return false
 }
 
-func blastFiles(files []string, plan Plan, a asked, f fetch) Blast {
+func blastFiles(files []string, plan kube.Plan, a asked, f fetch) Blast {
 	fallbackNS := a.namespace
 	if fallbackNS == "" {
 		fallbackNS = plan.Namespace
@@ -1303,10 +1306,10 @@ func blastFiles(files []string, plan Plan, a asked, f fetch) Blast {
 		kind string
 		ns   string
 	}
-	groups := map[groupKey][]ManifestRef{}
+	groups := map[groupKey][]kube.ManifestRef{}
 	var order []groupKey
 	for _, file := range files {
-		refs, errMsg, ok := ManifestRefs(file)
+		refs, errMsg, ok := kube.ManifestRefs(file)
 		if !ok {
 			return unknown("manifest: " + errMsg)
 		}
@@ -1331,7 +1334,7 @@ func blastFiles(files []string, plan Plan, a asked, f fetch) Blast {
 		group := groups[key]
 		token := group[0].Kind
 		token = strings.ToLower(token)
-		res, hasRes := ResolveResource(token)
+		res, hasRes := kube.ResolveResource(token)
 		ns := group[0].Namespace
 		if ns == "" {
 			ns = fallbackNS
@@ -1347,13 +1350,13 @@ func blastFiles(files []string, plan Plan, a asked, f fetch) Blast {
 		result, ok := fetchJSON(f, jsonArgs(resourceToken, names, withContext([]string{"-n", ns}, a.context)))
 		if !ok {
 			if len(items) > 0 {
-				return fromItems(items, Resource{}, false, a, f, fallbackNS, false)
+				return fromItems(items, kube.Resource{}, false, a, f, fallbackNS, false)
 			}
 			return unknown("timed out")
 		}
 		if !result.OK {
 			if len(items) > 0 {
-				return fromItems(items, Resource{}, false, a, f, fallbackNS, false)
+				return fromItems(items, kube.Resource{}, false, a, f, fallbackNS, false)
 			}
 			err := result.Error
 			if err == "" {
@@ -1368,7 +1371,7 @@ func blastFiles(files []string, plan Plan, a asked, f fetch) Blast {
 		parsed, ok := itemsFromJSON(result.JSON, expectedKind)
 		if !ok {
 			if len(items) > 0 {
-				return fromItems(items, Resource{}, false, a, f, fallbackNS, false)
+				return fromItems(items, kube.Resource{}, false, a, f, fallbackNS, false)
 			}
 			kind := "object"
 			if hasRes {
@@ -1378,11 +1381,11 @@ func blastFiles(files []string, plan Plan, a asked, f fetch) Blast {
 		}
 		items = append(items, parsed...)
 	}
-	return fromItems(items, Resource{}, false, a, f, fallbackNS, false)
+	return fromItems(items, kube.Resource{}, false, a, f, fallbackNS, false)
 }
 
-func blastDrain(args []string, plan Plan, f fetch, a asked) Blast {
-	words := PositionalWords(args).Words
+func blastDrain(args []string, plan kube.Plan, f fetch, a asked) Blast {
+	words := kube.PositionalWords(args).Words
 	if len(words) < 2 {
 		return skipped("no name or selector")
 	}
@@ -1416,12 +1419,12 @@ func blastDrain(args []string, plan Plan, f fetch, a asked) Blast {
 			filtered = append(filtered, item)
 		}
 	}
-	res, _ := ResolveResource("pod")
+	res, _ := kube.ResolveResource("pod")
 	return fromItems(filtered, res, true, a, f, fallbackNS, false)
 }
 
 // BlastRadius expands a mutating plan into the objects that would be affected.
-func BlastRadius(plan Plan, args []string, getJSON func([]string) KubectlJSONResult, now func() int64) Blast {
+func BlastRadius(plan kube.Plan, args []string, getJSON func([]string) live.KubectlJSONResult, now func() int64) Blast {
 	if now == nil {
 		now = func() int64 { return time.Now().UnixMilli() }
 	}
@@ -1430,7 +1433,7 @@ func BlastRadius(plan Plan, args []string, getJSON func([]string) KubectlJSONRes
 	a := askedOf(args)
 	scaleZero := false
 	if plan.Verb == "scale" {
-		if value, ok := FlagValue(args, []string{"--replicas"}); ok && value == "0" {
+		if value, ok := kube.FlagValue(args, []string{"--replicas"}); ok && value == "0" {
 			scaleZero = true
 		}
 	}
