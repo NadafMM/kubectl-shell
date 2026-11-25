@@ -58,14 +58,14 @@ CI details: [docs/ci.md](docs/ci.md).
 
 ## Project layout
 
-| Path            | Role                                                              |
-| --------------- | ----------------------------------------------------------------- |
-| `cmd/kube/`     | Go CLI entry (installed `kube`)                                   |
-| `internal/kube/`| Go completion, plan/ask, view, sandbox, mcp, record               |
-| `cli/`          | Transitional TypeScript CLI (tests / Node package until cleanup)  |
-| `src/lib/kube/` | TypeScript completion/model still used by the TS CLI              |
-| `scripts/`      | Test runner, release packaging, fake kubectl, e2e helpers         |
-| `cli/kube.cjs`  | Bundled TS binary (committed; CI checks drift until cleanup)      |
+| Path             | Role                                                             |
+| ---------------- | ---------------------------------------------------------------- |
+| `cmd/kube/`      | Go CLI entry (installed `kube`)                                  |
+| `internal/kube/` | Go completion, plan/ask, view, sandbox, mcp, record              |
+| `cli/`           | Transitional TypeScript CLI (tests / Node package until cleanup) |
+| `src/lib/kube/`  | TypeScript completion/model still used by the TS CLI             |
+| `scripts/`       | Test runner, release packaging, fake kubectl, e2e helpers        |
+| `cli/kube.cjs`   | Bundled TS binary (committed; CI checks drift until cleanup)     |
 
 Do not restore sample/offline cluster mode.
 
