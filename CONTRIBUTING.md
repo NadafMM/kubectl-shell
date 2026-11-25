@@ -15,9 +15,11 @@ Requirements: **Go 1.22+**, **kubectl** (for optional e2e). Node.js is only need
 ```bash
 git clone https://github.com/NadafMM/kubectl-shell.git
 cd kubectl-shell
-go test ./cmd/kube ./internal/kube
-go build -o bin/kube ./cmd/kube
+make test
+make build    # embeds VERSION into kube --version
 ```
+
+Packaging details: [docs/packaging.md](docs/packaging.md).
 
 Optional:
 
@@ -49,11 +51,14 @@ CI details: [docs/ci.md](docs/ci.md).
 
 ## Project layout
 
-| Path             | Role                                                     |
-| ---------------- | -------------------------------------------------------- |
-| `cmd/kube/`      | Go CLI entry (installed `kube`)                          |
-| `internal/kube/` | Completion, plan/ask, view, sandbox, mcp, record, etc.   |
-| `scripts/`       | Fake kubectl, release packaging, e2e helpers, docs check |
+| Path                 | Role                                                     |
+| -------------------- | -------------------------------------------------------- |
+| `VERSION`            | Release version (must match `package.json` and git tags) |
+| `cmd/kube/`          | Go CLI entry (installed `kube`)                          |
+| `internal/kube/`     | Completion, plan/ask, view, sandbox, mcp, record, etc.   |
+| `scripts/packaging/` | Cross-compile release tarballs and Homebrew formula      |
+| `scripts/`           | Fake kubectl, e2e helpers, docs check                    |
+| `Makefile`           | `build` / `test` / `install` / `dist`                    |
 
 Do not restore sample/offline cluster mode.
 

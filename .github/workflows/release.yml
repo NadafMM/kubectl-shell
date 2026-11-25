@@ -19,7 +19,7 @@ jobs:
         with:
           node-version: 22
       - run: go test ./cmd/kube ./internal/kube
-      - run: node scripts/package-release.mjs
+      - run: make dist
       - uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
@@ -59,7 +59,7 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           curl -fsSL "https://github.com/NadafMM/kubectl-shell/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz" -o /tmp/kubectl-shell-src.tgz
           SHA="$(sha256sum /tmp/kubectl-shell-src.tgz | cut -d' ' -f1)"
-          node scripts/render-formula.mjs "${VERSION}" "${SHA}" > tap/Formula/kubectl-shell.rb
+          node scripts/packaging/render-formula.mjs "${VERSION}" "${SHA}" > tap/Formula/kubectl-shell.rb
       - name: Commit and push tap
         if: steps.gate.outputs.enabled == 'true'
         working-directory: tap
