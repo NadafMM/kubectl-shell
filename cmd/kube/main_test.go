@@ -196,3 +196,58 @@ func TestAuditTail(t *testing.T) {
 }
 
 func intPtr(n int) *int { return &n }
+
+func TestUndoListAndRestore(t *testing.T) {
+	withFakeEnv(t)
+	t.Setenv("KUBE_FAKE_UNDO", "1")
+	var out, err bytes.Buffer
+	code := run([]string{"--yes", "set", "image", "deployment/checkout", "nginx=nginx:1.2"}, &out, &err, runOptions{
+		probeLive: func() bool { return true },
+		stdinTTY:  true,
+		runLive: func(args []string, _ kube.RunLiveOptions) int {
+			return 0
+		},
+	})
+	if code != 0 {
+		t.Fatalf("set image code %d err %q", code, err.String())
+	}
+	out.Reset()
+	err.Reset()
+	code = run([]string{"undo", "list"}, &out, &err, runOptions{})
+	if code != 0 || !strings.Contains(out.String(), "deployment/checkout") {
+		t.Fatalf("list code %d out %q", code, out.String())
+	}
+	out.Reset()
+	err.Reset()
+	var restore []string
+	code = run([]string{"--yes", "undo"}, &out, &err, runOptions{
+		stdinTTY: true,
+		runLive: func(args []string, _ kube.RunLiveOptions) int {
+			restore = append([]string{}, args...)
+			return 0
+		},
+	})
+	if code != 0 || !strings.Contains(out.String(), "restored deployment/checkout") {
+		t.Fatalf("undo code %d out %q", code, out.String())
+	}
+	if len(restore) == 0 || restore[0] != "rollout" {
+		t.Fatal(restore)
+	}
+}
+
+func TestUndoRefusesSecret(t *testing.T) {
+	withFakeEnv(t)
+	t.Setenv("KUBE_FAKE_UNDO", "1")
+	var out, err bytes.Buffer
+	_ = run([]string{"--yes", "label", "secret", "token", "env=prod"}, &out, &err, runOptions{
+		probeLive: func() bool { return true },
+		stdinTTY:  true,
+		runLive:   func([]string, kube.RunLiveOptions) int { return 0 },
+	})
+	out.Reset()
+	err.Reset()
+	code := run([]string{"--yes", "undo"}, &out, &err, runOptions{stdinTTY: true})
+	if code != 1 || !strings.Contains(out.String(), "Secrets or ConfigMaps") {
+		t.Fatalf("code %d out %q", code, out.String())
+	}
+}
