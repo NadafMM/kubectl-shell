@@ -17,13 +17,14 @@ const version = "0.5.1"
 
 // runOptions lets tests supply confirm answers and stdio without a real TTY.
 type runOptions struct {
-	confirm    func(prompt string) bool
-	stdinTTY   bool
-	stdin      io.Reader
-	runLive    func(args []string, options kube.RunLiveOptions) int
-	probeLive  func() bool
-	agent      *bool
-	forcePlain bool
+	confirm     func(prompt string) bool
+	stdinTTY    bool
+	stdin       io.Reader
+	runLive     func(args []string, options kube.RunLiveOptions) int
+	probeLive   func() bool
+	agent       *bool
+	forcePlain  bool
+	sandboxHost *kube.SandboxHost
 }
 
 type session struct {
@@ -52,11 +53,10 @@ func run(args []string, stdout, stderr io.Writer, opts runOptions) int {
 		fmt.Fprintln(stderr, "sample mode was removed. kube only runs against a reachable cluster.")
 		return 1
 	}
-	if flags.Sandbox {
-		fmt.Fprintln(stderr, "the Go port has not implemented sandbox yet. Use the TypeScript build.")
-		return 2
+	rest, code, done := prepareSandbox(flags.Sandbox, flags.Rest, stdout, stderr, opts)
+	if done {
+		return code
 	}
-	rest := flags.Rest
 	stdinTTY := opts.stdinTTY
 	if opts.stdin != nil {
 		stdinTTY = false
@@ -160,8 +160,8 @@ func helpText() string {
 	return `kube ` + version + ` (go)
 
 This binary runs kubectl through a plan when risk is high, completes words, and answers ask.
-Policy, plan-id, audit, undo, and view apply. With no args it opens the interactive shell
-(or runs a script from stdin when there is no TTY). Sandbox and mcp stay in TypeScript.
+Policy, plan-id, audit, undo, view, and sandbox apply. With no args it opens the interactive shell
+(or runs a script from stdin when there is no TTY). mcp stays in TypeScript.
 
   kube                         shell. Tab fills the next word
   kube --version
@@ -169,6 +169,8 @@ Policy, plan-id, audit, undo, and view apply. With no args it opens the interact
   kube get pods
   kube --yes delete pod <name>
   kube view [pods|deploy|svc|nodes|ns] [-A]
+  kube sandbox up|down|shell
+  kube --sandbox get pods
   kube plan [--json] <kubectl args>
   kube ask [--json] <question>
   kube audit tail [-n 20]
@@ -182,7 +184,8 @@ __complete fills resource names from kubectl when it answers, and keeps that
 snapshot for 12 seconds. Delete, drain, and scale-to-zero plans include a
 blast-radius report. High-risk and guarded commands ask before they run unless --yes is set.
 Reads keep the completion cache; writes clear it. Mutating named edits can be undone.
-Without a TTY, view prints a plain table. Inside the shell, ns and ctx change scope only.`
+Without a TTY, view prints a plain table. Inside the shell, ns and ctx change scope only.
+sandbox uses a separate kubeconfig under ~/.kube-shell/sandbox and does not rewrite ~/.kube/config.`
 }
 
 func complete(args []string, stdout io.Writer) int {
@@ -514,6 +517,56 @@ func runKubectl(argv []string, host session, stdout, stderr io.Writer, opts runO
 	}
 	writeAudit(decision, approver, &code)
 	return code
+}
+
+// prepareSandbox handles kube sandbox up|down|shell and --sandbox KUBECONFIG.
+// When done is true, the caller should return code immediately.
+func prepareSandbox(sandbox bool, rest []string, stdout, stderr io.Writer, opts runOptions) (next []string, code int, done bool) {
+	host := opts.sandboxHost
+	if host == nil {
+		h := kube.RealSandbox("")
+		host = &h
+	}
+	if len(rest) > 0 && rest[0] == "sandbox" {
+		action := ""
+		if len(rest) > 1 {
+			action = rest[1]
+		}
+		if len(rest) != 2 || (action != "up" && action != "down" && action != "shell") {
+			fmt.Fprintln(stderr, "usage: kube sandbox up|down|shell")
+			return rest, 1, true
+		}
+		if action == "up" || action == "down" {
+			var ok bool
+			var message string
+			if action == "up" {
+				ok, message = kube.SandboxUp(*host)
+			} else {
+				ok, message = kube.SandboxDown(*host)
+			}
+			text := message
+			if !strings.HasSuffix(text, "\n") {
+				text += "\n"
+			}
+			if ok {
+				fmt.Fprint(stdout, text)
+				return rest, 0, true
+			}
+			fmt.Fprint(stderr, text)
+			return rest, 1, true
+		}
+		rest = nil
+		sandbox = true
+	}
+	if sandbox {
+		config := kube.SandboxKubeconfig(host.Home)
+		if _, err := os.Stat(config); err != nil {
+			fmt.Fprintln(stderr, "kube sandbox is not up. Run kube sandbox up.")
+			return rest, 1, true
+		}
+		_ = os.Setenv("KUBECONFIG", config)
+	}
+	return rest, 0, false
 }
 
 func viewCommand(args []string, host session, stdout, stderr io.Writer, opts runOptions) int {
