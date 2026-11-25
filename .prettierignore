@@ -1,3 +1,6 @@
-cli/kube.cjs
 package-lock.json
 coverage/
+Makefile
+VERSION
+bin/
+dist/

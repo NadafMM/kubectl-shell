@@ -10,7 +10,7 @@
 
 ## Requirements
 
-- **Node.js 22+** (Homebrew installs its own Node dependency)
+- **Go 1.22+** to build from source (Homebrew installs Go as a build dependency)
 - **`kubectl`** on `PATH`
 - A **reachable cluster** in the current kubeconfig (no offline or practice mode)
 
@@ -26,16 +26,18 @@ kube --version
 
 Upgrade: `brew update && brew upgrade kubectl-shell`
 
-**From source (any OS, including Windows):**
+**From a release binary:** download the matching `kubectl-shell-<version>-<os>-<arch>.tar.gz` from [Releases](https://github.com/NadafMM/kubectl-shell/releases), extract, and put `kube` on your `PATH`.
+
+**From source:**
 
 ```bash
 git clone https://github.com/NadafMM/kubectl-shell.git
 cd kubectl-shell
-npm install -g .
-kube --version
+make build
+./bin/kube --version
 ```
 
-The bundle in `cli/kube.cjs` is committed; no build step is required to install. Release assets also include `kubectl-shell-*.tar.gz` and a standalone `kube.cjs`.
+Or: `go install github.com/NadafMM/kubectl-shell/cmd/kube@latest` (version string is the module version when installed that way).
 
 `help`, `--version`, and `completion` work without a cluster; other commands need a live API.
 
@@ -45,11 +47,11 @@ The bundle in `cli/kube.cjs` is committed; no build step is required to install.
 kube                    # interactive shell
 kube get pods           # one-shot
 kube view               # full-screen list (plain table without a TTY)
-kube plan delete pod x  # preview risk before running
+kube plan delete pod x  # name matching pods and Services that would lose Ready pods
 kube ask "why is checkout crashing"
 ```
 
-**`ask`** maps questions to kubectl commands with local pattern rules; it makes no network or AI-model calls.
+**`ask`** reads a failing pod, its events, and previous logs through kubectl, and still maps other questions with local pattern rules. It makes no AI-model calls of its own.
 
 **Shell meta commands:** `live`, `reset`, `view` / `ui`, `plan`, `ask` / `?`, `help`, `exit`.
 
@@ -57,11 +59,25 @@ kube ask "why is checkout crashing"
 
 High-risk verbs (delete, writes, `port-forward`, `run`, `expose`, pod `exec`/`cp`/…) prompt **`y`** on a TTY; use **`kube --yes`** in scripts. **`kube --yes` alone does not open a pre-confirmed shell.**
 
+`plan delete`, `plan drain`, and `plan scale --replicas=0` — and the interactive confirmation for those commands — look up matching objects with read-only `kubectl get -o json` calls. They flag Services that would lose Ready pods and PodDisruptionBudgets that allow 0 disruptions. `delete -f` reads local YAML or JSON only. `kube --yes` skips that lookup. A delete also tries `kubectl delete --dry-run=server` and still prints the object list if the API denies it.
+
+A policy file at `~/.kube-shell/policy.json` can mark a context `guarded` or `confirm: typed`, and can deny verbs. Inside the shell, `ctx` and `ns` change context and namespace for that shell only. Agents (`KUBE_SHELL_AGENT=1`) that require an approved plan use `kube plan --json`, then `kube --yes --plan-id <id>`. That id works once.
+
+`kube audit tail` prints recent redacted records from `~/.kube-shell/audit.jsonl`. `KUBE_SHELL_AUDIT=0` turns that file off unless the policy says `audit: required`.
+
+`kube mcp` speaks JSON-RPC on stdin for `kube_context`, `kube_plan`, and `kube_execute`. It reads only `~/.kube-shell/policy.json`. Secret and ConfigMap output is redacted in those responses. A delete needs a plan id from `kube_plan`.
+
+`kube undo` restores the previous saved object for a named `set`, `apply`, `patch`, `scale`, `label`, or `annotate`. It asks before it writes. Secrets, ConfigMaps, and Pods are refused.
+
+`kube sandbox up` starts a local kind cluster named `kube-shell-sandbox` and writes only `~/.kube-shell/sandbox/kubeconfig`. `kube --sandbox` and `kube sandbox shell` use that file. `kube sandbox down` deletes the cluster. `~/.kube/config` is not modified.
+
+`record on` inside the shell, or `kube --record session.md`, writes a redacted Markdown runbook of commands that actually ran. A refused confirmation is left out. The default file is `~/.kube-shell/sessions/`.
+
 Agents: `kube plan --json …`, then `--yes` when the plan matches intent. `__complete --json` for completion without running the line.
 
 ## Shell completion
 
-`kube completion bash|zsh|fish` prints a script for that shell. One-line install examples:
+`kube completion bash|zsh|fish|powershell` prints a script for that shell. One-line install examples:
 
 ```bash
 # bash (~/.bashrc)
@@ -72,6 +88,11 @@ source <(kube completion zsh)
 
 # fish (~/.config/fish/completions/kube.fish)
 kube completion fish | source
+```
+
+```powershell
+# PowerShell profile
+kube completion powershell | Out-String | Invoke-Expression
 ```
 
 ## Configuration
@@ -92,12 +113,11 @@ Details: [docs/security/threat-model.md](docs/security/threat-model.md). Report 
 ## Develop
 
 ```bash
-npm ci
-npm run typecheck
-npm run build && npm test
-npm run coverage
-npm run lint
-npm run e2e:tty   # Linux/macOS; requires Python 3
+go test ./cmd/kube ./internal/kube
+go build -o bin/kube ./cmd/kube
+npm ci                 # prettier + docs helpers
+npm run docs:check
+npm run e2e:tty        # Linux/macOS; needs bin/kube and node for fake-kubectl
 ```
 
 CI overview: [docs/ci.md](docs/ci.md). The demo GIF is produced from [`docs/demo.tape`](docs/demo.tape) (VHS) against a real cluster.
