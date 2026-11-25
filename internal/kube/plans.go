@@ -81,24 +81,31 @@ func MintPlan(record PlanExpect, now time.Time) (string, error) {
 }
 
 // ConsumePlan accepts a record once when it matches the command about to run.
+// The file is renamed first so two overlapping consumers cannot both succeed.
 func ConsumePlan(planID string, expected PlanExpect, now time.Time) (bool, string) {
 	path, ok := planPath(planID)
 	if !ok {
 		return false, "plan expired or unknown"
 	}
-	raw, err := os.ReadFile(path)
+	claimed := path + ".claimed"
+	if err := os.Rename(path, claimed); err != nil {
+		return false, "plan expired or unknown"
+	}
+	raw, err := os.ReadFile(claimed)
 	if err != nil {
+		_ = os.Remove(claimed)
 		return false, "plan expired or unknown"
 	}
 	var stored PlanRecord
 	if err := json.Unmarshal(raw, &stored); err != nil || stored.Expires <= now.UnixMilli() {
-		_ = os.Remove(path)
+		_ = os.Remove(claimed)
 		return false, "plan expired or unknown"
 	}
 	if stored.Context != expected.Context || stored.Namespace != expected.Namespace || !sameArgv(stored.Argv, expected.Argv) {
+		_ = os.Rename(claimed, path)
 		return false, "plan does not match this command"
 	}
-	_ = os.Remove(path)
+	_ = os.Remove(claimed)
 	return true, ""
 }
 

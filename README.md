@@ -57,7 +57,7 @@ kube ask "why is checkout crashing"
 
 **`kube view` keys (TTY):** `1`–`5` resource kinds, `j`/`k`, Enter describe, `l` logs (pods), `d` delete (confirmed), `/` filter, `n` namespace, `a` all namespaces, `r` refresh, `q` quit.
 
-High-risk verbs (delete, writes, `port-forward`, `run`, `expose`, pod `exec`/`cp`/…) prompt **`y`** on a TTY; use **`kube --yes`** in scripts. **`kube --yes` alone does not open a pre-confirmed shell.**
+High-risk verbs prompt **`y`** on a TTY (unless `--yes`): `delete`, `drain`, `cordon`/`taint`, `apply`/`create`/`replace`/`patch`, `set`/`label`/`annotate`/`edit`, `scale`/`autoscale`/`uncordon`, `run`/`expose`, `exec`/`cp`/`attach`/`debug`, `port-forward`/`proxy`, and similar. Dry-runs stay low risk. Unknown verbs (plugins, etc.) are treated as read and do not prompt. **`kube --yes` alone does not open a pre-confirmed shell.**
 
 `plan delete`, `plan drain`, and `plan scale --replicas=0` — and the interactive confirmation for those commands — look up matching objects with read-only `kubectl get -o json` calls. They flag Services that would lose Ready pods and PodDisruptionBudgets that allow 0 disruptions. `delete -f` reads local YAML or JSON only. `kube --yes` skips that lookup. A delete also tries `kubectl delete --dry-run=server` and still prints the object list if the API denies it.
 
