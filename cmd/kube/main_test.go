@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -32,6 +33,23 @@ func TestCompletePods(t *testing.T) {
 	var out, err bytes.Buffer
 	code := run([]string{"__complete", "--cursor", "10", "--line", line}, &out, &err)
 	if code != 0 || !strings.Contains(out.String(), "pods") {
+		t.Fatalf("code %d out %q err %q", code, out.String(), err.String())
+	}
+}
+
+func TestCompleteLiveDeployment(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("KUBE_SHELL_KUBECTL", "node")
+	t.Setenv("KUBE_SHELL_NODE_SCRIPT", filepath.Join("..", "..", "scripts", "fake-kubectl.mjs"))
+	t.Setenv("KUBE_FAKE_FIXTURE", "up")
+	t.Setenv("KUBE_FAKE_LOG", filepath.Join(home, "kubectl.log"))
+	t.Setenv("KUBE_FAKE_FAIL", "")
+	line := "kube get deploy "
+	var out, err bytes.Buffer
+	code := run([]string{"__complete", "--cursor", "16", "--line", line}, &out, &err)
+	if code != 0 || !strings.Contains(out.String(), "web") {
 		t.Fatalf("code %d out %q err %q", code, out.String(), err.String())
 	}
 }

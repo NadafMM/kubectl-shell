@@ -3,69 +3,69 @@ package kube
 import "strings"
 
 type KObject struct {
-	Kind       string
-	Name       string
-	NS         string
-	Age        string
-	Labels     map[string]string
-	Status     string
-	SvcType    string
-	Containers []Container
+	Kind       string            `json:"kind"`
+	Name       string            `json:"name"`
+	NS         string            `json:"ns"`
+	Age        string            `json:"age"`
+	Labels     map[string]string `json:"labels"`
+	Status     string            `json:"status,omitempty"`
+	SvcType    string            `json:"svcType,omitempty"`
+	Containers []Container       `json:"containers,omitempty"`
 }
 
 type Container struct {
-	Name string
+	Name string `json:"name"`
 }
 
 type Context struct {
-	Name      string
-	Cluster   string
-	User      string
-	Namespace string
+	Name      string `json:"name"`
+	Cluster   string `json:"cluster"`
+	User      string `json:"user"`
+	Namespace string `json:"namespace"`
 }
 
 type Namespace struct {
-	Name   string
-	Status string
-	Age    string
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Age    string `json:"age"`
 }
 
 type Node struct {
-	Name        string
-	Status      string
-	Roles       string
-	Age         string
-	Version     string
-	IP          string
-	Schedulable bool
+	Name        string `json:"name"`
+	Status      string `json:"status"`
+	Roles       string `json:"roles"`
+	Age         string `json:"age"`
+	Version     string `json:"version"`
+	IP          string `json:"ip"`
+	Schedulable bool   `json:"schedulable"`
 }
 
 type PV struct {
-	Name     string
-	Capacity string
-	Mode     string
-	Status   string
-	Claim    string
-	Age      string
+	Name     string `json:"name"`
+	Capacity string `json:"capacity"`
+	Mode     string `json:"mode"`
+	Status   string `json:"status"`
+	Claim    string `json:"claim"`
+	Age      string `json:"age"`
 }
 
 type Event struct {
-	NS      string
-	Last    string
-	Type    string
-	Reason  string
-	Object  string
-	Message string
+	NS      string `json:"ns"`
+	Last    string `json:"last"`
+	Type    string `json:"type"`
+	Reason  string `json:"reason"`
+	Object  string `json:"object"`
+	Message string `json:"message"`
 }
 
 type Cluster struct {
-	Current    string
-	Contexts   []Context
-	Namespaces []Namespace
-	Nodes      []Node
-	PVs        []PV
-	Events     []Event
-	Objects    []KObject
+	Current    string      `json:"current"`
+	Contexts   []Context   `json:"contexts"`
+	Namespaces []Namespace `json:"namespaces"`
+	Nodes      []Node      `json:"nodes"`
+	PVs        []PV        `json:"pvs"`
+	Events     []Event     `json:"events"`
+	Objects    []KObject   `json:"objects"`
 }
 
 type Resource struct {

@@ -17,6 +17,8 @@ Workflows under `.github/workflows/` run on every PR to `main`.
 | **labeler**      | Auto labels from paths (`.github/labeler.yml`)                                                                |
 | **release**      | Tag `v*.*.*` → tarball + `cli/kube.cjs` on the GitHub Release, Homebrew tap bump, brew smoke on macOS         |
 
+The **test** workflow also runs `go test ./cmd/kube ./internal/kube` on Ubuntu. That job needs Node because the tests drive `scripts/fake-kubectl.mjs`.
+
 ## Local commands
 
 ```bash
