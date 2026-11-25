@@ -75,6 +75,21 @@ func TestPlanDelete(t *testing.T) {
 	}
 }
 
+func TestPlanBlastSkippedForGet(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("KUBE_SHELL_KUBECTL", "node")
+	t.Setenv("KUBE_SHELL_NODE_SCRIPT", filepath.Join("..", "..", "scripts", "fake-kubectl.mjs"))
+	t.Setenv("KUBE_FAKE_FIXTURE", "up")
+	t.Setenv("KUBE_FAKE_FAIL", "")
+	var out, err bytes.Buffer
+	code := run([]string{"plan", "--json", "get", "pods"}, &out, &err)
+	if code != 0 || strings.Contains(out.String(), `"blast"`) {
+		t.Fatalf("code %d out %q err %q", code, out.String(), err.String())
+	}
+}
+
 func TestAskContext(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

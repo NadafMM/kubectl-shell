@@ -70,6 +70,7 @@ The interactive shell, view, and kubectl execution still run from the TypeScript
 
 __complete fills resource names from kubectl when it answers, and keeps that
 snapshot for 12 seconds. plan and ask describe a command and do not run it.
+Delete, drain, and scale-to-zero plans include a blast-radius report.
 The shell and view still run in the TypeScript CLI.`
 }
 
@@ -180,19 +181,31 @@ func planCommand(args []string, stdout, stderr io.Writer) int {
 	}
 	cluster := clusterFor(line)
 	plan := kube.PlanCommand(line, cluster)
-	if !asJSON {
-		fmt.Fprintln(stdout, kube.FormatPlan(plan))
-		return 0
-	}
-	type payload struct {
-		kube.Plan
-		PlanID string `json:"planId,omitempty"`
-	}
-	out := payload{Plan: plan}
 	argv := append([]string{}, rest...)
 	if len(argv) > 0 && (argv[0] == "kubectl" || argv[0] == "k") {
 		argv = argv[1:]
 	}
+	var blast *kube.Blast
+	if wantsBlast(plan) {
+		report := liveBlast(plan, argv)
+		blast = &report
+	}
+	if !asJSON {
+		text := kube.FormatPlan(plan)
+		if blast != nil {
+			if extra := kube.FormatBlast(*blast); extra != "" {
+				text += "\n" + extra
+			}
+		}
+		fmt.Fprintln(stdout, text)
+		return 0
+	}
+	type payload struct {
+		kube.Plan
+		Blast  *kube.Blast `json:"blast,omitempty"`
+		PlanID string      `json:"planId,omitempty"`
+	}
+	out := payload{Plan: plan, Blast: blast}
 	id, err := kube.MintPlan(kube.PlanExpect{Context: plan.Context, Namespace: plan.Namespace, Argv: argv}, time.Now())
 	if err == nil {
 		out.PlanID = id
@@ -204,6 +217,22 @@ func planCommand(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "%s\n", encoded)
 	return 0
+}
+
+func wantsBlast(plan kube.Plan) bool {
+	return plan.Verb == "delete" || plan.Verb == "drain" || (plan.Verb == "scale" && plan.Risk == "high")
+}
+
+func liveBlast(plan kube.Plan, argv []string) kube.Blast {
+	started := time.Now().UnixMilli()
+	getJSON := func(args []string) kube.KubectlJSONResult {
+		left := kube.BlastBudgetMS - (time.Now().UnixMilli() - started)
+		if left <= 0 {
+			return kube.KubectlJSONResult{OK: false, Error: "timed out"}
+		}
+		return kube.RunJson(args, int(left))
+	}
+	return kube.BlastRadius(plan, argv, getJSON, func() int64 { return time.Now().UnixMilli() })
 }
 
 func askCommand(args []string, stdout, stderr io.Writer) int {
