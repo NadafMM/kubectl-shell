@@ -14,19 +14,53 @@ import (
 
 const version = "0.5.1"
 
-func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+// runOptions lets tests supply confirm answers and stdio without a real TTY.
+type runOptions struct {
+	confirm   func(prompt string) bool
+	stdinTTY  bool
+	runLive   func(args []string, options kube.RunLiveOptions) int
+	probeLive func() bool
 }
 
-func run(args []string, stdout, stderr io.Writer) int {
+func main() {
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, runOptions{}))
+}
+
+func run(args []string, stdout, stderr io.Writer, opts runOptions) int {
 	if len(args) > 0 && args[0] == "__complete" {
 		return complete(args[1:], stdout)
 	}
-	if len(args) == 0 {
+	flags := kube.ParseLeadingFlags(args)
+	if flags.Error != "" {
+		fmt.Fprintln(stderr, flags.Error)
+		return 1
+	}
+	if flags.Sample {
+		fmt.Fprintln(stderr, "sample mode was removed. kube only runs against a reachable cluster.")
+		return 1
+	}
+	if flags.Sandbox {
+		fmt.Fprintln(stderr, "the Go port has not implemented sandbox yet. Use the TypeScript build.")
+		return 2
+	}
+	if flags.Policy != "" || flags.PlanID != "" || flags.ConfirmContext != "" {
+		fmt.Fprintln(stderr, "the Go port has not implemented policy and plan-id yet. Use the TypeScript build.")
+		return 2
+	}
+	rest := flags.Rest
+	stdinTTY := opts.stdinTTY
+	if opts.confirm == nil {
+		fi, err := os.Stdin.Stat()
+		stdinTTY = err == nil && fi.Mode()&os.ModeCharDevice != 0
+	}
+	yes := kube.AllowYes(flags.Yes, len(rest), stdinTTY)
+
+	if len(rest) == 0 {
 		fmt.Fprintln(stderr, "the Go port does not open the shell yet. Try `kube --help`.")
 		return 2
 	}
-	switch args[0] {
+
+	switch rest[0] {
 	case "--version", "-v":
 		fmt.Fprintln(stdout, version)
 		return 0
@@ -34,13 +68,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, helpText())
 		return 0
 	case "plan":
-		return planCommand(args[1:], stdout, stderr)
+		return planCommand(rest[1:], stdout, stderr)
 	case "ask":
-		return askCommand(args[1:], stdout, stderr)
+		return askCommand(rest[1:], stdout, stderr)
 	case "completion":
 		shell := ""
-		if len(args) > 1 {
-			shell = args[1]
+		if len(rest) > 1 {
+			shell = rest[1]
 		}
 		script := kube.CompletionScript(shell)
 		if script == "" {
@@ -49,29 +83,37 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprint(stdout, script)
 		return 0
-	default:
-		fmt.Fprintf(stderr, "the Go port has not implemented %q yet. kubectl execution and the shell are still the TypeScript build.\n", args[0])
+	}
+
+	meta := kube.MetaOf(strings.Join(rest, " "))
+	switch meta {
+	case "view", "ui", "ns", "ctx", "undo", "audit", "live", "reset", "clear", "exit", "quit", "mcp":
+		fmt.Fprintf(stderr, "the Go port has not implemented %q yet. Use the TypeScript build.\n", rest[0])
 		return 2
 	}
+
+	return runKubectl(rest, yes, stdout, stderr, opts)
 }
 
 func helpText() string {
 	return `kube ` + version + ` (go)
 
-This binary is the start of the Go port. It completes words, plans a command, and answers a question.
-The interactive shell, view, and kubectl execution still run from the TypeScript build.
+This binary runs kubectl through a plan when risk is high, completes words, and answers ask.
+The interactive shell and view still run from the TypeScript build.
 
   kube --version
   kube --help
+  kube get pods
+  kube --yes delete pod <name>
   kube plan [--json] <kubectl args>
   kube ask [--json] <question>
   kube completion bash|zsh|fish
   kube __complete --line <line> --cursor <n> [--json]
 
 __complete fills resource names from kubectl when it answers, and keeps that
-snapshot for 12 seconds. plan and ask describe a command and do not run it.
-Delete, drain, and scale-to-zero plans include a blast-radius report.
-The shell and view still run in the TypeScript CLI.`
+snapshot for 12 seconds. Delete, drain, and scale-to-zero plans include a
+blast-radius report. High-risk commands ask before they run unless --yes is set.
+Reads keep the completion cache; writes clear it.`
 }
 
 func complete(args []string, stdout io.Writer) int {
@@ -169,6 +211,19 @@ func clusterFor(line string) kube.Cluster {
 	return cluster
 }
 
+func engineLine(argv []string) (string, bool) {
+	parts := make([]string, 0, len(argv)+1)
+	parts = append(parts, "kubectl")
+	for _, arg := range argv {
+		quoted, ok := kube.QuoteArg(arg)
+		if !ok {
+			return "", false
+		}
+		parts = append(parts, quoted)
+	}
+	return strings.Join(parts, " "), true
+}
+
 func planCommand(args []string, stdout, stderr io.Writer) int {
 	asJSON, rest := stripJSON(args)
 	if len(rest) == 0 {
@@ -250,4 +305,60 @@ func askCommand(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintln(stdout, kube.FormatAdvice(advice))
 	return 0
+}
+
+func runKubectl(argv []string, yes bool, stdout, stderr io.Writer, opts runOptions) int {
+	probe := opts.probeLive
+	if probe == nil {
+		probe = kube.ProbeLive
+	}
+	if !probe() {
+		fmt.Fprintln(stderr, "kubectl could not reach a cluster. kube only runs against a reachable cluster.")
+		return 1
+	}
+	line, ok := engineLine(argv)
+	if !ok {
+		fmt.Fprintln(stderr, "cannot pass an argument that contains both quote styles")
+		return 1
+	}
+	cluster := clusterFor(line)
+	plan := kube.PlanCommand(line, cluster)
+	if plan.Risk == "high" && !yes {
+		text := kube.FormatPlan(plan)
+		if wantsBlast(plan) {
+			if extra := kube.FormatBlast(liveBlast(plan, argv)); extra != "" {
+				text += "\n" + extra
+			}
+		}
+		fmt.Fprintln(stderr, text)
+		confirm := opts.confirm
+		if confirm == nil {
+			confirm = defaultConfirm(stderr)
+		}
+		if !confirm("Run it? [y/N] ") {
+			fmt.Fprintln(stdout, "not run")
+			return 1
+		}
+	}
+	runner := opts.runLive
+	if runner == nil {
+		runner = kube.RunLive
+	}
+	code := runner(argv, kube.RunLiveOptions{InheritStdin: true})
+	if code == 0 {
+		return 0
+	}
+	return code
+}
+
+func defaultConfirm(stderr io.Writer) func(string) bool {
+	return func(prompt string) bool {
+		tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+		if err != nil {
+			fmt.Fprintf(stderr, "\nkube: could not read the answer (%v); not running it.\n", err)
+			return false
+		}
+		defer tty.Close()
+		return kube.ConfirmLine(tty, tty, prompt)
+	}
 }

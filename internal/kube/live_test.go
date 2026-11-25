@@ -269,3 +269,36 @@ func TestProbeIgnoresCacheWithoutObjects(t *testing.T) {
 func strconvNow() string {
 	return strconv.FormatInt(time.Now().UnixMilli(), 10)
 }
+
+func TestRunLiveKeepsCacheOnGet(t *testing.T) {
+	withFake(t, func(log string) {
+		if _, ok := LiveCluster("kubectl"); !ok {
+			t.Fatal("cold")
+		}
+		if _, err := os.Stat(cachePath()); err != nil {
+			t.Fatal(err)
+		}
+		code := RunLive([]string{"get", "pods"}, RunLiveOptions{})
+		if code != 0 {
+			t.Fatal(code)
+		}
+		if _, err := os.Stat(cachePath()); err != nil {
+			t.Fatal("get should keep the cache")
+		}
+	})
+}
+
+func TestRunLiveClearsCacheOnDelete(t *testing.T) {
+	withFake(t, func(log string) {
+		if _, ok := LiveCluster("kubectl"); !ok {
+			t.Fatal("cold")
+		}
+		code := RunLive([]string{"delete", "pod", "x"}, RunLiveOptions{})
+		if code != 0 {
+			t.Fatal(code)
+		}
+		if _, err := os.Stat(cachePath()); !os.IsNotExist(err) {
+			t.Fatal("delete should clear the cache")
+		}
+	})
+}

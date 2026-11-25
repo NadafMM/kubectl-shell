@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -221,6 +222,98 @@ func RunJson(args []string, timeoutMs int) KubectlJSONResult {
 	out := make(json.RawMessage, len(raw))
 	copy(out, raw)
 	return KubectlJSONResult{OK: true, JSON: out}
+}
+
+// CaptureLive runs kubectl with stdout and stderr collected.
+func CaptureLive(args []string) (code int, stdout, stderr string) {
+	name := os.Getenv("KUBE_SHELL_KUBECTL")
+	if name == "" {
+		name = "kubectl"
+	}
+	argv := append([]string{}, args...)
+	if script := os.Getenv("KUBE_SHELL_NODE_SCRIPT"); script != "" {
+		argv = append([]string{script}, args...)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, argv...)
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	err := cmd.Run()
+	if err == nil {
+		return 0, outBuf.String(), errBuf.String()
+	}
+	if exit, ok := err.(*exec.ExitError); ok {
+		return exit.ExitCode(), outBuf.String(), errBuf.String()
+	}
+	return 1, outBuf.String(), errBuf.String()
+}
+
+// RunLiveOptions controls how RunLive attaches stdio.
+type RunLiveOptions struct {
+	InheritStdin bool
+	Stdin        *os.File
+	Stdout       *os.File
+	Stderr       *os.File
+}
+
+// RunLive runs kubectl with inherited stdio. The completion cache is cleared
+// only when the argv can change names the snapshot holds.
+func RunLive(args []string, options RunLiveOptions) int {
+	name := os.Getenv("KUBE_SHELL_KUBECTL")
+	if name == "" {
+		name = "kubectl"
+	}
+	argv := append([]string{}, args...)
+	if script := os.Getenv("KUBE_SHELL_NODE_SCRIPT"); script != "" {
+		argv = append([]string{script}, args...)
+	}
+	cmd := exec.Command(name, argv...)
+	stdin := options.Stdin
+	if stdin == nil {
+		stdin = os.Stdin
+	}
+	stdout := options.Stdout
+	if stdout == nil {
+		stdout = os.Stdout
+	}
+	stderr := options.Stderr
+	if stderr == nil {
+		stderr = os.Stderr
+	}
+	if options.InheritStdin {
+		cmd.Stdin = stdin
+	} else if fi, err := stdin.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
+		cmd.Stdin = stdin
+	} else {
+		cmd.Stdin = nil
+	}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	err := cmd.Run()
+	if InvalidatesLiveCache(args) {
+		InvalidateLive()
+	}
+	if err == nil {
+		return 0
+	}
+	if exit, ok := err.(*exec.ExitError); ok {
+		return exit.ExitCode()
+	}
+	_, _ = io.WriteString(stderr, "kubectl: "+err.Error()+"\n")
+	return 127
+}
+
+// ApplyLiveContext refreshes the current context list from kubeconfig.
+func ApplyLiveContext(cluster Cluster) Cluster {
+	base, ok := contextCluster()
+	if !ok {
+		return cluster
+	}
+	cluster.Current = base.Current
+	cluster.Contexts = base.Contexts
+	return cluster
 }
 
 // ProbeLive reports whether a cluster answered recently. A fresh completion
