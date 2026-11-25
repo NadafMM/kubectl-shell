@@ -34,3 +34,12 @@ func TestMintAndConsumePlan(t *testing.T) {
 		t.Fatal("expired plan was accepted")
 	}
 }
+
+func TestValidPlanID(t *testing.T) {
+	if !ValidPlanID("0123456789abcdef0123456789abcdef") {
+		t.Fatal("expected valid")
+	}
+	if ValidPlanID("../policy") || ValidPlanID("abc") || ValidPlanID("0123456789ABCDEF0123456789abcdef") {
+		t.Fatal("expected invalid")
+	}
+}

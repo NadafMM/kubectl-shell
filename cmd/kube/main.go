@@ -415,15 +415,6 @@ func auditCommand(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func containsVerb(verbs []string, verb string) bool {
-	for _, item := range verbs {
-		if item == verb {
-			return true
-		}
-	}
-	return false
-}
-
 func runKubectl(argv []string, host session, stdout, stderr io.Writer, opts runOptions) int {
 	probe := opts.probeLive
 	if probe == nil {
@@ -442,7 +433,6 @@ func runKubectl(argv []string, host session, stdout, stderr io.Writer, opts runO
 	auditID := kube.NewAuditId()
 	cluster := clusterFor(line)
 	plan := kube.PlanCommand(line, cluster)
-	rule := kube.RuleFor(host.policy, cluster.Current)
 	actor := "human-cli"
 	if host.agent {
 		actor = "agent-cli"
@@ -460,35 +450,20 @@ func runKubectl(argv []string, host session, stdout, stderr io.Writer, opts runO
 			Approver: approver, ExitCode: exitCode, DurationMs: int(time.Since(started).Milliseconds()),
 		}, 0)
 	}
-	if containsVerb(rule.Deny, plan.Verb) {
-		writeAudit("denied-policy", "none", nil)
-		fmt.Fprintf(stdout, "refused: %s is denied by policy\n", plan.Verb)
-		return 1
-	}
-	if host.agent && host.policy != nil && host.policy.Agents != nil && plan.Risk == "read" && !containsVerb(host.policy.Agents.Allow, plan.Verb) {
-		writeAudit("denied-policy", "none", nil)
-		fmt.Fprintf(stdout, "refused: %s is not allowed for agents\n", plan.Verb)
-		return 1
-	}
-	needsPlan := host.agent && host.policy != nil && host.policy.Agents != nil && host.policy.Agents.WriteRequires == "approved-plan" && plan.Mutating
+	auth := kube.Authorize(kube.AuthRequest{
+		Plan: plan, Argv: argv, Policy: host.policy, Agent: host.agent,
+		Yes: host.yes, ConfirmContext: host.confirmContext, PlanID: host.planID,
+		PolicyContext: cluster.Current,
+	}, func(planID string, expect kube.PlanExpect) (bool, string) {
+		return kube.ConsumePlan(planID, expect, time.Now())
+	})
 	blastText := ""
-	if needsPlan {
-		if host.planID == "" {
-			writeAudit("denied-policy", "none", nil)
-			fmt.Fprintln(stdout, "refused: agent writes need --plan-id from plan --json")
-			return 1
-		}
-		ok, reason := kube.ConsumePlan(host.planID, kube.PlanExpect{Context: plan.Context, Namespace: plan.Namespace, Argv: argv}, time.Now())
-		if !ok {
-			writeAudit("denied-policy", "none", nil)
-			fmt.Fprintf(stdout, "refused: %s\n", reason)
-			return 1
-		}
-	} else if rule.Confirm == "typed" && host.yes && host.confirmContext != cluster.Current {
-		writeAudit("refused-confirm", "none", nil)
-		fmt.Fprintf(stdout, "refused: pass --confirm-context %s\n", cluster.Current)
+	if !auth.OK {
+		writeAudit(auth.AuditDecision, "none", nil)
+		fmt.Fprintln(stdout, auth.Refuse)
 		return 1
-	} else if (plan.Risk == "high" || (rule.Mode == "guarded" && plan.Risk == "low")) && !host.yes {
+	}
+	if auth.RequireConfirm {
 		text := kube.FormatPlan(plan)
 		if wantsBlast(plan) {
 			if extra := kube.FormatBlast(liveBlast(plan, argv)); extra != "" {
@@ -507,14 +482,7 @@ func runKubectl(argv []string, host session, stdout, stderr io.Writer, opts runO
 			return 1
 		}
 	}
-	approver := "prompt-y"
-	if needsPlan {
-		approver = "plan-id:" + host.planID
-	} else if rule.Confirm == "typed" && host.yes {
-		approver = "typed-context"
-	} else if host.yes {
-		approver = "flag-yes"
-	}
+	approver := auth.Approver
 	dryRun := false
 	for _, token := range argv {
 		if token == "--dry-run" || strings.HasPrefix(token, "--dry-run=") {

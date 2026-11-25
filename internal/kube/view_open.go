@@ -48,13 +48,27 @@ func lookupText(verb string, row Row) string {
 func runViewDelete(plan Plan, yes bool, policy *Policy, actor string) string {
 	started := time.Now()
 	argv := KubectlArgs(plan.Command)
+	auth := Authorize(AuthRequest{
+		Plan: plan, Argv: argv, Policy: policy, Yes: yes,
+		PolicyContext: plan.Context,
+	}, func(planID string, expect PlanExpect) (bool, string) {
+		return ConsumePlan(planID, expect, time.Now())
+	})
+	if !auth.OK {
+		if AuditEnabled(policy) {
+			AppendAudit(AuditEntry{
+				ID: NewAuditId(), Timestamp: time.Now().UTC().Format(time.RFC3339),
+				Actor: actor, Context: plan.Context, Namespace: plan.Namespace,
+				Argv: RedactArgv(argv), Risk: plan.Risk, Decision: auth.AuditDecision,
+				Approver: "none",
+			}, 0)
+		}
+		return auth.Refuse
+	}
+	// View already collected y/N when yes is false; RequireConfirm is treated as armed.
 	code, stdout, stderr := CaptureLive(argv)
 	if AuditEnabled(policy) {
 		exit := code
-		approver := "prompt-y"
-		if yes {
-			approver = "flag-yes"
-		}
 		AppendAudit(AuditEntry{
 			ID:         NewAuditId(),
 			Timestamp:  time.Now().UTC().Format(time.RFC3339),
@@ -64,7 +78,7 @@ func runViewDelete(plan Plan, yes bool, policy *Policy, actor string) string {
 			Argv:       RedactArgv(argv),
 			Risk:       plan.Risk,
 			Decision:   "executed",
-			Approver:   approver,
+			Approver:   auth.Approver,
 			ExitCode:   &exit,
 			DurationMs: int(time.Since(started).Milliseconds()),
 		}, 0)

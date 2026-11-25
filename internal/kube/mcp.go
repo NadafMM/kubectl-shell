@@ -151,7 +151,7 @@ func HandleMcpRpc(message McpRpc, cluster Cluster, version string) any {
 		}, func() int64 { return time.Now().UnixMilli() })
 		planID, _ := MintPlan(PlanExpect{Context: planned.Context, Namespace: planned.Namespace, Argv: argv}, time.Now())
 		zero := 0
-		mcpRecord(active, cluster, argv, planned.Risk, "executed", &zero, started, "none")
+		mcpRecord(active, cluster, argv, planned.Risk, "planned", &zero, started, "none")
 		type planPayload struct {
 			Plan
 			Blast  Blast  `json:"blast"`
@@ -164,40 +164,27 @@ func HandleMcpRpc(message McpRpc, cluster Cluster, version string) any {
 	if name != "kube_execute" {
 		return mcpToolResult(id, "unknown tool", true)
 	}
-	if containsString(rule.Deny, planned.Verb) {
-		mcpRecord(active, cluster, argv, planned.Risk, "denied-policy", nil, started, "none")
-		return mcpToolResult(id, "refused: "+planned.Verb+" is denied by policy", true)
+	planID, _ := args["planId"].(string)
+	auth := Authorize(AuthRequest{
+		Plan: planned, Argv: argv, Policy: active, Agent: true, MCP: true,
+		PlanID: planID, PolicyContext: cluster.Current, Yes: true,
+	}, func(id string, expect PlanExpect) (bool, string) {
+		return ConsumePlan(id, expect, time.Now())
+	})
+	if !auth.OK {
+		mcpRecord(active, cluster, argv, planned.Risk, auth.AuditDecision, nil, started, "none")
+		return mcpToolResult(id, auth.Refuse, true)
 	}
-	if planned.Mutating {
-		typedBlocked := rule.Confirm == "typed" && !containsString(allow, planned.Verb)
-		planID, _ := args["planId"].(string)
-		if typedBlocked || planID == "" {
-			mcpRecord(active, cluster, argv, planned.Risk, "denied-policy", nil, started, "none")
-			return mcpToolResult(id, "refused: mutating commands need a plan id", true)
-		}
-		ok, reason := ConsumePlan(planID, PlanExpect{Context: planned.Context, Namespace: planned.Namespace, Argv: argv}, time.Now())
-		if !ok {
-			mcpRecord(active, cluster, argv, planned.Risk, "denied-policy", nil, started, "none")
-			return mcpToolResult(id, "refused: "+reason, true)
-		}
-		code, stdout, stderr := CaptureLive(argv)
-		mcpRecord(active, cluster, argv, planned.Risk, "executed", &code, started, "plan-id:"+planID)
-		text := stdout
-		if strings.TrimSpace(text) == "" {
-			text = stderr
-		}
-		return mcpToolResult(id, text, code != 0)
-	}
-	if !containsString(allow, planned.Verb) {
-		mcpRecord(active, cluster, argv, planned.Risk, "denied-policy", nil, started, "none")
-		return mcpToolResult(id, "refused: "+planned.Verb+" is not allowed", true)
-	}
-	code, stdout, _ := CaptureLive(argv)
-	if SensitiveStdoutKind(argv) != "" {
+	code, stdout, stderr := CaptureLive(argv)
+	if SensitiveStdoutKind(argv) != "" || planned.Mutating {
 		stdout = RedactKubectlStdout(argv, stdout)
 	}
-	mcpRecord(active, cluster, argv, planned.Risk, "executed", &code, started, "none")
-	return mcpToolResult(id, stdout, code != 0)
+	mcpRecord(active, cluster, argv, planned.Risk, "executed", &code, started, auth.Approver)
+	text := stdout
+	if strings.TrimSpace(text) == "" {
+		text = stderr
+	}
+	return mcpToolResult(id, text, code != 0)
 }
 
 // ServeMcp reads Content-Length framed JSON-RPC from in and writes framed replies to out.

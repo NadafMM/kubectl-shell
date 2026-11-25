@@ -365,7 +365,11 @@ func executeEngine(engineLine string, cluster kube.Cluster, scope *kube.ShellSco
 	started := time.Now()
 	auditID := kube.NewAuditId()
 	argv := kube.CommandArgs(engineLine, scope)
-	rule := kube.RuleFor(host.policy, cluster.Current)
+	scopeCtx := ""
+	if scope != nil {
+		scopeCtx = scope.Context
+	}
+	policyCtx := kube.EffectiveContext(cluster.Current, scopeCtx)
 	actor := "human-cli"
 	if host.agent {
 		actor = "agent-cli"
@@ -383,30 +387,19 @@ func executeEngine(engineLine string, cluster kube.Cluster, scope *kube.ShellSco
 			Approver: approver, ExitCode: exitCode, DurationMs: int(time.Since(started).Milliseconds()),
 		}, 0)
 	}
-	if containsVerb(rule.Deny, planned.Verb) {
-		writeAudit("denied-policy", "none", nil)
-		return lineResult{output: "refused: " + planned.Verb + " is denied by policy", ok: false, cluster: cluster}
-	}
-	if host.agent && host.policy != nil && host.policy.Agents != nil && planned.Risk == "read" && !containsVerb(host.policy.Agents.Allow, planned.Verb) {
-		writeAudit("denied-policy", "none", nil)
-		return lineResult{output: "refused: " + planned.Verb + " is not allowed for agents", ok: false, cluster: cluster}
-	}
-	needsPlan := host.agent && host.policy != nil && host.policy.Agents != nil && host.policy.Agents.WriteRequires == "approved-plan" && planned.Mutating
+	auth := kube.Authorize(kube.AuthRequest{
+		Plan: planned, Argv: argv, Policy: host.policy, Agent: host.agent,
+		Yes: host.yes, ConfirmContext: host.confirmContext, PlanID: host.planID,
+		PolicyContext: policyCtx,
+	}, func(planID string, expect kube.PlanExpect) (bool, string) {
+		return kube.ConsumePlan(planID, expect, time.Now())
+	})
 	blastText := ""
-	if needsPlan {
-		if host.planID == "" {
-			writeAudit("denied-policy", "none", nil)
-			return lineResult{output: "refused: agent writes need --plan-id from plan --json", ok: false, cluster: cluster}
-		}
-		ok, reason := kube.ConsumePlan(host.planID, kube.PlanExpect{Context: planned.Context, Namespace: planned.Namespace, Argv: argv}, time.Now())
-		if !ok {
-			writeAudit("denied-policy", "none", nil)
-			return lineResult{output: "refused: " + reason, ok: false, cluster: cluster}
-		}
-	} else if rule.Confirm == "typed" && host.yes && host.confirmContext != cluster.Current {
-		writeAudit("refused-confirm", "none", nil)
-		return lineResult{output: "refused: pass --confirm-context " + cluster.Current, ok: false, cluster: cluster}
-	} else if (planned.Risk == "high" || (rule.Mode == "guarded" && planned.Risk == "low")) && !host.yes {
+	if !auth.OK {
+		writeAudit(auth.AuditDecision, "none", nil)
+		return lineResult{output: auth.Refuse, ok: false, cluster: cluster}
+	}
+	if auth.RequireConfirm {
 		text := kube.FormatPlan(planned)
 		if wantsBlast(planned) {
 			if extra := kube.FormatBlast(liveBlast(planned, argv)); extra != "" {
@@ -424,14 +417,7 @@ func executeEngine(engineLine string, cluster kube.Cluster, scope *kube.ShellSco
 			return lineResult{output: "not run", ok: false, cluster: cluster}
 		}
 	}
-	approver := "prompt-y"
-	if needsPlan {
-		approver = "plan-id:" + host.planID
-	} else if rule.Confirm == "typed" && host.yes {
-		approver = "typed-context"
-	} else if host.yes {
-		approver = "flag-yes"
-	}
+	approver := auth.Approver
 	dryRun := false
 	for _, token := range argv {
 		if token == "--dry-run" || strings.HasPrefix(token, "--dry-run=") {
