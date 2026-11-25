@@ -51,7 +51,7 @@ func trimHistoryFile() {
 	if len(lines) <= historyLimit {
 		return
 	}
-	_ = writePrivate(historyPath(), strings.Join(lines[len(lines)-historyLimit:], "\n")+"\n")
+	_ = WritePrivate(historyPath(), strings.Join(lines[len(lines)-historyLimit:], "\n")+"\n")
 }
 
 // RememberHistory appends a redacted line to ~/.kube-shell/history.
@@ -62,7 +62,7 @@ func RememberHistory(line string) {
 	}
 	path := historyPath()
 	if _, err := os.Stat(path); err != nil {
-		_ = writePrivate(path, "")
+		_ = WritePrivate(path, "")
 	} else {
 		_ = os.Chmod(path, 0o600)
 	}

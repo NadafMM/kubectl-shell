@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/NadafMM/kubectl-shell/internal/kube"
+	"github.com/NadafMM/kubectl-shell/internal/kube/live"
+	ksandbox "github.com/NadafMM/kubectl-shell/internal/kube/sandbox"
 )
 
 func withFakeEnv(t *testing.T) {
@@ -21,8 +23,8 @@ func withFakeEnv(t *testing.T) {
 	t.Setenv("KUBE_FAKE_FIXTURE", "up")
 	t.Setenv("KUBE_FAKE_LOG", filepath.Join(home, "kubectl.log"))
 	t.Setenv("KUBE_FAKE_FAIL", "")
-	kube.InvalidateLive()
-	t.Cleanup(kube.InvalidateLive)
+	live.InvalidateLive()
+	t.Cleanup(live.InvalidateLive)
 }
 
 func TestVersion(t *testing.T) {
@@ -219,7 +221,7 @@ func TestGetPodsRuns(t *testing.T) {
 	var seen []string
 	code := run([]string{"get", "pods"}, &out, &err, runOptions{
 		probeLive: func() bool { return true },
-		runLive: func(args []string, _ kube.RunLiveOptions) int {
+		runLive: func(args []string, _ live.RunLiveOptions) int {
 			seen = append(seen, args...)
 			return 0
 		},
@@ -236,7 +238,7 @@ func TestDeleteRefusedWithoutYes(t *testing.T) {
 	code := run([]string{"delete", "pod", "checkout"}, &out, &err, runOptions{
 		probeLive: func() bool { return true },
 		confirm:   func(string) bool { return false },
-		runLive: func([]string, kube.RunLiveOptions) int {
+		runLive: func([]string, live.RunLiveOptions) int {
 			ran = true
 			return 0
 		},
@@ -257,7 +259,7 @@ func TestDeleteWithYesRuns(t *testing.T) {
 		probeLive: func() bool { return true },
 		stdinTTY:  true,
 		confirm:   func(string) bool { t.Fatal("confirm"); return false },
-		runLive: func(args []string, _ kube.RunLiveOptions) int {
+		runLive: func(args []string, _ live.RunLiveOptions) int {
 			ran = true
 			if args[0] != "delete" {
 				t.Fatal(args)
@@ -280,7 +282,7 @@ func TestPolicyDeniesExec(t *testing.T) {
 	ran := false
 	code := run([]string{"--policy", policyPath, "exec", "pod/api", "--", "date"}, &out, &errBuf, runOptions{
 		probeLive: func() bool { return true },
-		runLive: func([]string, kube.RunLiveOptions) int {
+		runLive: func([]string, live.RunLiveOptions) int {
 			ran = true
 			return 0
 		},
@@ -313,7 +315,7 @@ func TestUndoListAndRestore(t *testing.T) {
 	code := run([]string{"--yes", "set", "image", "deployment/checkout", "nginx=nginx:1.2"}, &out, &err, runOptions{
 		probeLive: func() bool { return true },
 		stdinTTY:  true,
-		runLive: func(args []string, _ kube.RunLiveOptions) int {
+		runLive: func(args []string, _ live.RunLiveOptions) int {
 			return 0
 		},
 	})
@@ -331,7 +333,7 @@ func TestUndoListAndRestore(t *testing.T) {
 	var restore []string
 	code = run([]string{"--yes", "undo"}, &out, &err, runOptions{
 		stdinTTY: true,
-		runLive: func(args []string, _ kube.RunLiveOptions) int {
+		runLive: func(args []string, _ live.RunLiveOptions) int {
 			restore = append([]string{}, args...)
 			return 0
 		},
@@ -351,7 +353,7 @@ func TestUndoRefusesSecret(t *testing.T) {
 	_ = run([]string{"--yes", "label", "secret", "token", "env=prod"}, &out, &err, runOptions{
 		probeLive: func() bool { return true },
 		stdinTTY:  true,
-		runLive:   func([]string, kube.RunLiveOptions) int { return 0 },
+		runLive:   func([]string, live.RunLiveOptions) int { return 0 },
 	})
 	out.Reset()
 	err.Reset()
@@ -377,7 +379,7 @@ func TestShellScriptAppliesNsScope(t *testing.T) {
 	code := run([]string{}, &out, &errBuf, runOptions{
 		stdin:     strings.NewReader("ns payments\nget pods\n"),
 		probeLive: func() bool { return true },
-		runLive: func(args []string, _ kube.RunLiveOptions) int {
+		runLive: func(args []string, _ live.RunLiveOptions) int {
 			seen = append(seen, append([]string{}, args...))
 			return 0
 		},
@@ -429,17 +431,17 @@ func TestSandboxUpDown(t *testing.T) {
 	userConfig := filepath.Join(home, ".kube", "config")
 	_ = os.MkdirAll(filepath.Dir(userConfig), 0o755)
 	_ = os.WriteFile(userConfig, []byte("original-kubeconfig"), 0o600)
-	var calls []kube.SandboxCommand
-	host := &kube.SandboxHost{
+	var calls []ksandbox.SandboxCommand
+	host := &ksandbox.SandboxHost{
 		Home: home,
 		Has:  func(string) bool { return true },
-		Run: func(command kube.SandboxCommand) kube.SandboxResult {
+		Run: func(command ksandbox.SandboxCommand) ksandbox.SandboxResult {
 			calls = append(calls, command)
 			if len(command.Args) > 0 && command.Args[0] == "create" {
-				_ = os.MkdirAll(filepath.Dir(kube.SandboxKubeconfig(home)), 0o700)
-				_ = os.WriteFile(kube.SandboxKubeconfig(home), []byte("kind-config"), 0o600)
+				_ = os.MkdirAll(filepath.Dir(ksandbox.SandboxKubeconfig(home)), 0o700)
+				_ = os.WriteFile(ksandbox.SandboxKubeconfig(home), []byte("kind-config"), 0o600)
 			}
-			return kube.SandboxResult{Code: 0}
+			return ksandbox.SandboxResult{Code: 0}
 		},
 	}
 	var out, errBuf bytes.Buffer
@@ -460,7 +462,7 @@ func TestSandboxUpDown(t *testing.T) {
 	if code != 0 || !strings.Contains(out.String(), "is down") {
 		t.Fatalf("code %d out %q err %q", code, out.String(), errBuf.String())
 	}
-	if _, err := os.Stat(kube.SandboxKubeconfig(home)); !os.IsNotExist(err) {
+	if _, err := os.Stat(ksandbox.SandboxKubeconfig(home)); !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
 }
@@ -469,7 +471,7 @@ func TestSandboxFlagRequiresUp(t *testing.T) {
 	withFakeEnv(t)
 	var out, errBuf bytes.Buffer
 	code := run([]string{"--sandbox", "get", "pods"}, &out, &errBuf, runOptions{
-		sandboxHost: &kube.SandboxHost{Home: os.Getenv("HOME"), Has: func(string) bool { return true }, Run: func(kube.SandboxCommand) kube.SandboxResult { return kube.SandboxResult{} }},
+		sandboxHost: &ksandbox.SandboxHost{Home: os.Getenv("HOME"), Has: func(string) bool { return true }, Run: func(ksandbox.SandboxCommand) ksandbox.SandboxResult { return ksandbox.SandboxResult{} }},
 	})
 	if code != 1 || !strings.Contains(errBuf.String(), "kube sandbox is not up") {
 		t.Fatalf("code %d err %q", code, errBuf.String())

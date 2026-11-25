@@ -11,6 +11,10 @@ import (
 	"time"
 
 	"github.com/NadafMM/kubectl-shell/internal/kube"
+	"github.com/NadafMM/kubectl-shell/internal/kube/live"
+	kplan "github.com/NadafMM/kubectl-shell/internal/kube/plan"
+	"github.com/NadafMM/kubectl-shell/internal/kube/undo"
+	"github.com/NadafMM/kubectl-shell/internal/kube/view"
 )
 
 type lineResult struct {
@@ -59,8 +63,8 @@ func runUserLine(line string, cluster kube.Cluster, host lineHost) lineResult {
 	case "exit", "quit":
 		return lineResult{ok: true, cluster: cluster, exit: true}
 	case "reset":
-		kube.InvalidateLive()
-		next, ok := kube.LiveCluster("kubectl")
+		live.InvalidateLive()
+		next, ok := live.LiveCluster("kubectl")
 		if !ok {
 			next = cluster
 		}
@@ -72,10 +76,10 @@ func runUserLine(line string, cluster kube.Cluster, host lineHost) lineResult {
 			cluster: cluster,
 		}
 	case "live":
-		kube.InvalidateLive()
+		live.InvalidateLive()
 		probe := host.opts.probeLive
 		if probe == nil {
-			probe = kube.ProbeLive
+			probe = live.ProbeLive
 		}
 		if !probe() {
 			return lineResult{
@@ -84,7 +88,7 @@ func runUserLine(line string, cluster kube.Cluster, host lineHost) lineResult {
 				cluster: cluster,
 			}
 		}
-		next, ok := kube.LiveCluster("kubectl")
+		next, ok := live.LiveCluster("kubectl")
 		if !ok {
 			next = cluster
 		}
@@ -147,8 +151,8 @@ func runUserLine(line string, cluster kube.Cluster, host lineHost) lineResult {
 		if stdoutFile == nil {
 			forcePlain = true
 		}
-		next := kube.OpenView(cluster, kube.ViewOptions{
-			Board:        kube.BoardFrom(word),
+		next := view.OpenView(cluster, view.ViewOptions{
+			Board:        view.BoardFrom(word),
 			All:          all,
 			Yes:          host.yes,
 			TypedConfirm: rule.Confirm == "typed",
@@ -157,12 +161,12 @@ func runUserLine(line string, cluster kube.Cluster, host lineHost) lineResult {
 			StdoutFile:   stdoutFile,
 			Policy:       host.policy,
 			Reload: func(wantAll bool, namespace string) (kube.Cluster, bool) {
-				kube.InvalidateLive()
+				live.InvalidateLive()
 				reloadLine := "kubectl get pods -n " + namespace
 				if wantAll {
 					reloadLine = "kubectl get pods -A"
 				}
-				return kube.LiveCluster(reloadLine)
+				return live.LiveCluster(reloadLine)
 			},
 		})
 		return lineResult{ok: true, cluster: next}
@@ -178,7 +182,7 @@ func runUserLine(line string, cluster kube.Cluster, host lineHost) lineResult {
 		}
 		question = strings.ReplaceAll(question, "--json", "")
 		question = strings.Trim(strings.TrimSpace(question), `"'`)
-		advice := kube.AskAdvice(question, cluster, kube.ContextArgs(scope))
+		advice := kplan.AskAdvice(question, cluster, kube.ContextArgs(scope))
 		if asJSON {
 			encoded, err := json.Marshal(advice)
 			if err != nil {
@@ -187,9 +191,9 @@ func runUserLine(line string, cluster kube.Cluster, host lineHost) lineResult {
 			return lineResult{output: string(encoded), ok: true, cluster: cluster}
 		}
 		if !host.stdinTTY {
-			return lineResult{output: kube.FormatAdvice(advice), ok: true, cluster: cluster}
+			return lineResult{output: kplan.FormatAdvice(advice), ok: true, cluster: cluster}
 		}
-		fmt.Fprintln(host.stderr, kube.FormatAdvice(advice))
+		fmt.Fprintln(host.stderr, kplan.FormatAdvice(advice))
 		confirm := host.confirm
 		if confirm == nil {
 			confirm = defaultConfirm(host.stderr)
@@ -211,7 +215,7 @@ func undoLine(trimmed string, cluster kube.Cluster, host lineHost) lineResult {
 	parts := strings.Fields(trimmed)
 	if len(parts) > 1 && parts[1] == "list" {
 		lines := make([]string, 0)
-		for _, record := range kube.ListUndo(time.Now()) {
+		for _, record := range undo.ListUndo(time.Now()) {
 			state := "restorable"
 			if record.Refused != "" {
 				state = "not restorable"
@@ -223,11 +227,11 @@ func undoLine(trimmed string, cluster kube.Cluster, host lineHost) lineResult {
 		}
 		return lineResult{output: strings.Join(lines, "\n"), ok: true, cluster: cluster}
 	}
-	record, ok := kube.LatestUndo(time.Now())
+	record, ok := undo.LatestUndo(time.Now())
 	if !ok {
 		return lineResult{output: "nothing to undo", ok: false, cluster: cluster}
 	}
-	if refusal := kube.UndoRefusal(record); refusal != "" {
+	if refusal := undo.UndoRefusal(record); refusal != "" {
 		return lineResult{output: refusal, ok: false, cluster: cluster}
 	}
 	preview := "apply saved " + record.Kind + "/" + record.Name
@@ -245,10 +249,10 @@ func undoLine(trimmed string, cluster kube.Cluster, host lineHost) lineResult {
 	}
 	runner := host.opts.runLive
 	if runner == nil {
-		runner = kube.RunLive
+		runner = live.RunLive
 	}
-	restore := kube.RestoreArgs(record)
-	options := kube.RunLiveOptions{InheritStdin: true}
+	restore := undo.RestoreArgs(record)
+	options := live.RunLiveOptions{InheritStdin: true}
 	if len(restore) >= 2 && restore[0] == "apply" && record.Snapshot != nil {
 		options.StdinReader = bytes.NewReader(record.Snapshot)
 		options.InheritStdin = false
@@ -327,17 +331,17 @@ func planLine(trimmed string, cluster kube.Cluster, scope *kube.ShellScope) line
 		return lineResult{output: "usage: kube plan [--json] delete pod <name>", ok: false, cluster: cluster}
 	}
 	view := kube.ToEngine(body, len(body), "repl")
-	planned := kube.PlanCommand(view.Line, cluster)
+	planned := kplan.PlanCommand(view.Line, cluster)
 	argv := kube.CommandArgs(view.Line, scope)
-	var blast *kube.Blast
+	var blast *kplan.Blast
 	if wantsBlast(planned) {
 		report := liveBlast(planned, argv)
 		blast = &report
 	}
 	if !asJSON {
-		text := kube.FormatPlan(planned)
+		text := kplan.FormatPlan(planned)
 		if blast != nil {
-			if extra := kube.FormatBlast(*blast); extra != "" {
+			if extra := kplan.FormatBlast(*blast); extra != "" {
 				text += "\n" + extra
 			}
 		}
@@ -345,8 +349,8 @@ func planLine(trimmed string, cluster kube.Cluster, scope *kube.ShellScope) line
 	}
 	type payload struct {
 		kube.Plan
-		Blast  *kube.Blast `json:"blast,omitempty"`
-		PlanID string      `json:"planId,omitempty"`
+		Blast  *kplan.Blast `json:"blast,omitempty"`
+		PlanID string       `json:"planId,omitempty"`
 	}
 	out := payload{Plan: planned, Blast: blast}
 	id, err := kube.MintPlan(kube.PlanExpect{Context: planned.Context, Namespace: planned.Namespace, Argv: argv}, time.Now())
@@ -361,7 +365,7 @@ func planLine(trimmed string, cluster kube.Cluster, scope *kube.ShellScope) line
 }
 
 func executeEngine(engineLine string, cluster kube.Cluster, scope *kube.ShellScope, host lineHost) lineResult {
-	planned := kube.PlanCommand(engineLine, cluster)
+	planned := kplan.PlanCommand(engineLine, cluster)
 	started := time.Now()
 	auditID := kube.NewAuditId()
 	argv := kube.CommandArgs(engineLine, scope)
@@ -400,9 +404,9 @@ func executeEngine(engineLine string, cluster kube.Cluster, scope *kube.ShellSco
 		return lineResult{output: auth.Refuse, ok: false, cluster: cluster}
 	}
 	if auth.RequireConfirm {
-		text := kube.FormatPlan(planned)
+		text := kplan.FormatPlan(planned)
 		if wantsBlast(planned) {
-			if extra := kube.FormatBlast(liveBlast(planned, argv)); extra != "" {
+			if extra := kplan.FormatBlast(liveBlast(planned, argv)); extra != "" {
 				blastText = extra
 				text += "\n" + extra
 			}
@@ -428,13 +432,13 @@ func executeEngine(engineLine string, cluster kube.Cluster, scope *kube.ShellSco
 		}
 	}
 	if !dryRun {
-		kube.RememberUndo(argv, cluster, auditID, time.Now())
+		undo.RememberUndo(argv, cluster, auditID, time.Now())
 	}
 	runner := host.opts.runLive
 	if runner == nil {
-		runner = kube.RunLive
+		runner = live.RunLive
 	}
-	code := runner(argv, kube.RunLiveOptions{InheritStdin: !host.stdinTTY})
+	code := runner(argv, live.RunLiveOptions{InheritStdin: !host.stdinTTY})
 	decision := "executed"
 	if dryRun {
 		decision = "dry-run"
@@ -451,5 +455,5 @@ func executeEngine(engineLine string, cluster kube.Cluster, scope *kube.ShellSco
 		entry.Summary = planned.Summary
 	}
 	kube.NoteRan(entry)
-	return lineResult{ok: code == 0, cluster: kube.ApplyLiveContext(cluster)}
+	return lineResult{ok: code == 0, cluster: live.ApplyLiveContext(cluster)}
 }

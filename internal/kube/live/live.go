@@ -1,9 +1,10 @@
-package kube
+package live
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/NadafMM/kubectl-shell/internal/kube"
 	"io"
 	"os"
 	"os/exec"
@@ -87,52 +88,21 @@ type kItem struct {
 }
 
 type cacheRow struct {
-	At      int64   `json:"at"`
-	Key     string  `json:"key"`
-	Cluster Cluster `json:"cluster"`
+	At      int64        `json:"at"`
+	Key     string       `json:"key"`
+	Cluster kube.Cluster `json:"cluster"`
 }
 
 var (
 	memory        *cacheRow
 	contextMemory *struct {
 		at      time.Time
-		cluster Cluster
+		cluster kube.Cluster
 	}
 )
 
-func StateDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		home = os.TempDir()
-	}
-	return filepath.Join(home, ".kube-shell")
-}
-
 func cachePath() string {
-	return filepath.Join(StateDir(), "live.json")
-}
-
-func writePrivate(file, data string) error {
-	dir := filepath.Dir(file)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return err
-	}
-	tmp := file + "." + strconv.Itoa(os.Getpid()) + ".tmp"
-	if err := os.WriteFile(tmp, []byte(data), 0o600); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmp, 0o600); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, file); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return os.Chmod(file, 0o600)
+	return filepath.Join(kube.StateDir(), "live.json")
 }
 
 func kubectl(args []string, timeout time.Duration) (int, string) {
@@ -273,12 +243,12 @@ func RunLive(args []string, options RunLiveOptions) int {
 	if fi, err := stdout.Stat(); err == nil {
 		stdoutTTY = fi.Mode()&os.ModeCharDevice != 0
 	}
-	if WantsRedactedStdout(args) && !stdoutTTY {
+	if kube.WantsRedactedStdout(args) && !stdoutTTY {
 		code, out, errOut := CaptureLive(args)
 		if errOut != "" {
 			_, _ = io.WriteString(stderr, errOut)
 		}
-		_, _ = io.WriteString(stdout, RedactKubectlStdout(args, out))
+		_, _ = io.WriteString(stdout, kube.RedactKubectlStdout(args, out))
 		if InvalidatesLiveCache(args) {
 			InvalidateLive()
 		}
@@ -321,7 +291,7 @@ func RunLive(args []string, options RunLiveOptions) int {
 
 // ApplyLiveContext refreshes the known context list from kubeconfig without
 // overwriting the shell's current context (scope may pin --context separately).
-func ApplyLiveContext(cluster Cluster) Cluster {
+func ApplyLiveContext(cluster kube.Cluster) kube.Cluster {
 	base, ok := contextCluster()
 	if !ok {
 		return cluster
@@ -368,21 +338,21 @@ func readFreshDisk(key string) (cacheRow, bool) {
 	return parsed, true
 }
 
-func readCache(key string) (Cluster, bool) {
+func readCache(key string) (kube.Cluster, bool) {
 	if memory != nil && memory.Key == key && time.Since(time.UnixMilli(memory.At)) < liveTTL && memory.Cluster.Objects != nil {
 		return memory.Cluster, true
 	}
 	parsed, ok := readFreshDisk(key)
 	if !ok {
-		return Cluster{}, false
+		return kube.Cluster{}, false
 	}
 	memory = &parsed
 	return parsed.Cluster, true
 }
 
-func writeCache(key string, cluster Cluster) {
+func writeCache(key string, cluster kube.Cluster) {
 	if cluster.Objects == nil {
-		cluster.Objects = []KObject{}
+		cluster.Objects = []kube.KObject{}
 	}
 	row := cacheRow{At: time.Now().UnixMilli(), Key: key, Cluster: cluster}
 	memory = &row
@@ -390,7 +360,7 @@ func writeCache(key string, cluster Cluster) {
 	if err != nil {
 		return
 	}
-	_ = writePrivate(cachePath(), string(raw))
+	_ = kube.WritePrivate(cachePath(), string(raw))
 }
 
 func InvalidateLive() {
@@ -405,7 +375,7 @@ func InvalidatesLiveCache(args []string) bool {
 	if dryRunKeeps(args) {
 		return false
 	}
-	words := PositionalWords(args).Words
+	words := kube.PositionalWords(args).Words
 	if len(words) == 0 {
 		return true
 	}
@@ -457,21 +427,21 @@ type configView struct {
 	} `json:"contexts"`
 }
 
-func contextCluster() (Cluster, bool) {
+func contextCluster() (kube.Cluster, bool) {
 	if contextMemory != nil && time.Since(contextMemory.at) < time.Minute {
 		return contextMemory.cluster, true
 	}
 	code, stdout := kubectl([]string{"config", "view", "-o", "json"}, 4*time.Second)
 	if code != 0 || strings.TrimSpace(stdout) == "" {
-		return Cluster{}, false
+		return kube.Cluster{}, false
 	}
 	var parsed configView
 	if err := json.Unmarshal([]byte(stdout), &parsed); err != nil {
-		return Cluster{}, false
+		return kube.Cluster{}, false
 	}
 	current := strings.TrimSpace(parsed.CurrentContext)
 	if current == "" {
-		return Cluster{}, false
+		return kube.Cluster{}, false
 	}
 	_, namesOut := kubectl([]string{"config", "get-contexts", "-o", "name"}, 4*time.Second)
 	var names []string
@@ -481,7 +451,7 @@ func contextCluster() (Cluster, bool) {
 			names = append(names, line)
 		}
 	}
-	if !containsString(names, current) {
+	if !kube.ContainsString(names, current) {
 		names = append([]string{current}, names...)
 	}
 	nsOf := func(name string) string {
@@ -492,7 +462,7 @@ func contextCluster() (Cluster, bool) {
 		}
 		return "default"
 	}
-	contexts := make([]Context, 0, len(names))
+	contexts := make([]kube.Context, 0, len(names))
 	for _, name := range names {
 		clusterName, user := name, name
 		for _, item := range parsed.Contexts {
@@ -505,12 +475,12 @@ func contextCluster() (Cluster, bool) {
 				}
 			}
 		}
-		contexts = append(contexts, Context{Name: name, Cluster: clusterName, User: user, Namespace: nsOf(name)})
+		contexts = append(contexts, kube.Context{Name: name, Cluster: clusterName, User: user, Namespace: nsOf(name)})
 	}
-	cluster := Cluster{Current: current, Contexts: contexts, Namespaces: []Namespace{}, Nodes: []Node{}, PVs: []PV{}, Events: []Event{}, Objects: []KObject{}}
+	cluster := kube.Cluster{Current: current, Contexts: contexts, Namespaces: []kube.Namespace{}, Nodes: []kube.Node{}, PVs: []kube.PV{}, Events: []kube.Event{}, Objects: []kube.KObject{}}
 	contextMemory = &struct {
 		at      time.Time
-		cluster Cluster
+		cluster kube.Cluster
 	}{at: time.Now(), cluster: cluster}
 	return cluster, true
 }
@@ -614,10 +584,10 @@ func detailOf(item kItem) string {
 	}
 }
 
-func MapListItem(item kItem) (KObject, bool) {
+func MapListItem(item kItem) (kube.KObject, bool) {
 	kind := kindMap[item.Kind]
 	if kind == "" || item.Metadata == nil || item.Metadata.Name == "" {
-		return KObject{}, false
+		return kube.KObject{}, false
 	}
 	ns := item.Metadata.Namespace
 	if ns == "" {
@@ -627,7 +597,7 @@ func MapListItem(item kItem) (KObject, bool) {
 	if labels == nil {
 		labels = map[string]string{}
 	}
-	object := KObject{
+	object := kube.KObject{
 		Kind:   kind,
 		Name:   item.Metadata.Name,
 		NS:     ns,
@@ -641,19 +611,19 @@ func MapListItem(item kItem) (KObject, bool) {
 	if item.Spec != nil {
 		for _, container := range item.Spec.Containers {
 			if container.Name != "" {
-				object.Containers = append(object.Containers, Container{Name: container.Name})
+				object.Containers = append(object.Containers, kube.Container{Name: container.Name})
 			}
 		}
 	}
 	return object, true
 }
 
-func MapNode(item kItem) (Node, bool) {
+func MapNode(item kItem) (kube.Node, bool) {
 	if item.Metadata == nil || item.Metadata.Name == "" {
-		return Node{}, false
+		return kube.Node{}, false
 	}
 	if item.Kind != "" && item.Kind != "Node" {
-		return Node{}, false
+		return kube.Node{}, false
 	}
 	status := "Unknown"
 	if item.Status != nil {
@@ -680,15 +650,15 @@ func MapNode(item kItem) (Node, bool) {
 	if item.Metadata != nil {
 		created = item.Metadata.CreationTimestamp
 	}
-	return Node{
+	return kube.Node{
 		Name: item.Metadata.Name, Status: status, Age: AgeOf(created, time.Now()),
 		Version: version, Schedulable: schedulable,
 	}, true
 }
 
-func mapEvent(item kItem, fallbackNS string) (Event, bool) {
+func mapEvent(item kItem, fallbackNS string) (kube.Event, bool) {
 	if item.Kind != "Event" {
-		return Event{}, false
+		return kube.Event{}, false
 	}
 	object := ""
 	ns := fallbackNS
@@ -711,7 +681,7 @@ func mapEvent(item kItem, fallbackNS string) (Event, bool) {
 	if item.Metadata != nil {
 		created = item.Metadata.CreationTimestamp
 	}
-	return Event{NS: ns, Last: AgeOf(created, time.Now()), Type: item.Type, Reason: item.Reason, Object: object, Message: item.Message}, true
+	return kube.Event{NS: ns, Last: AgeOf(created, time.Now()), Type: item.Type, Reason: item.Reason, Object: object, Message: item.Message}, true
 }
 
 func ParseProjected(stdout string) []kItem {
@@ -875,7 +845,7 @@ func fetchProjectedLists(ctx, scope []string, groups [][]string) [][]kItem {
 	return lists
 }
 
-func fetchEvents(ctx []string, ns string, all bool) []Event {
+func fetchEvents(ctx []string, ns string, all bool) []kube.Event {
 	scope := []string{"-n", ns}
 	if ns == "" {
 		scope = []string{"-n", "default"}
@@ -887,7 +857,7 @@ func fetchEvents(ctx []string, ns string, all bool) []Event {
 	if fallback == "" {
 		fallback = "default"
 	}
-	var events []Event
+	var events []kube.Event
 	for _, item := range itemsOf(append(append([]string{}, ctx...), append([]string{"get", "events"}, scope...)...)) {
 		if event, ok := mapEvent(item, fallback); ok {
 			events = append(events, event)
@@ -896,7 +866,7 @@ func fetchEvents(ctx []string, ns string, all bool) []Event {
 	return events
 }
 
-func fetchObjects(ctx []string, ns string, all bool) ([]KObject, []Event) {
+func fetchObjects(ctx []string, ns string, all bool) ([]kube.KObject, []kube.Event) {
 	scope := []string{"-n", ns}
 	if ns == "" {
 		scope = []string{"-n", "default"}
@@ -904,7 +874,7 @@ func fetchObjects(ctx []string, ns string, all bool) ([]KObject, []Event) {
 	if all {
 		scope = []string{"--all-namespaces"}
 	}
-	var objects []KObject
+	var objects []kube.KObject
 	for _, list := range fetchProjectedLists(ctx, scope, objectGroups) {
 		for _, item := range list {
 			mapped, ok := MapListItem(item)
@@ -925,19 +895,19 @@ func fetchObjects(ctx []string, ns string, all bool) ([]KObject, []Event) {
 
 // LiveCluster builds a completion snapshot from kubeconfig and the API.
 // The second result is false when kubectl cannot describe the current context.
-func LiveCluster(engineLine string) (Cluster, bool) {
+func LiveCluster(engineLine string) (kube.Cluster, bool) {
 	base, ok := contextCluster()
 	if !ok {
-		return Cluster{}, false
+		return kube.Cluster{}, false
 	}
 	var tokens []string
-	for _, token := range Tokenize(engineLine) {
-		tokens = append(tokens, Unquote(token.Text))
+	for _, token := range kube.Tokenize(engineLine) {
+		tokens = append(tokens, kube.Unquote(token.Text))
 	}
 	if len(tokens) == 0 {
 		tokens = []string{"kubectl"}
 	}
-	scope := ScopeOf(tokens, base)
+	scope := kube.ScopeOf(tokens, base)
 	keyNS := scope.NS
 	if scope.All {
 		keyNS = "*"
@@ -948,17 +918,17 @@ func LiveCluster(engineLine string) (Cluster, bool) {
 	}
 	ctx := contextArgs(scope.Context, base.Current)
 	scoped := itemsOf(append(append([]string{}, ctx...), "get", "ns,nodes,pv,storageclasses.storage.k8s.io,priorityclasses.scheduling.k8s.io,customresourcedefinitions.apiextensions.k8s.io"))
-	var namespaces []Namespace
-	var nodes []Node
-	var pvs []PV
-	var clusterObjects []KObject
+	var namespaces []kube.Namespace
+	var nodes []kube.Node
+	var pvs []kube.PV
+	var clusterObjects []kube.KObject
 	for _, item := range scoped {
 		if item.Kind == "Namespace" && item.Metadata != nil && item.Metadata.Name != "" {
 			status := "Active"
 			if item.Status != nil && item.Status.Phase != "" {
 				status = item.Status.Phase
 			}
-			namespaces = append(namespaces, Namespace{Name: item.Metadata.Name, Status: status, Age: AgeOf(item.Metadata.CreationTimestamp, time.Now())})
+			namespaces = append(namespaces, kube.Namespace{Name: item.Metadata.Name, Status: status, Age: AgeOf(item.Metadata.CreationTimestamp, time.Now())})
 		}
 		if item.Kind == "Node" {
 			if node, ok := MapNode(item); ok {
@@ -974,7 +944,7 @@ func LiveCluster(engineLine string) (Cluster, bool) {
 			if item.Status != nil {
 				phase = item.Status.Phase
 			}
-			pvs = append(pvs, PV{Name: item.Metadata.Name, Capacity: capacity, Status: phase, Age: AgeOf(item.Metadata.CreationTimestamp, time.Now())})
+			pvs = append(pvs, kube.PV{Name: item.Metadata.Name, Capacity: capacity, Status: phase, Age: AgeOf(item.Metadata.CreationTimestamp, time.Now())})
 		}
 		if mapped, ok := MapListItem(item); ok {
 			clusterObjects = append(clusterObjects, mapped)
@@ -984,18 +954,18 @@ func LiveCluster(engineLine string) (Cluster, bool) {
 	if len(namespaces) == 0 {
 		namespaces = base.Namespaces
 	}
-	objects := append([]KObject{}, clusterObjects...)
+	objects := append([]kube.KObject{}, clusterObjects...)
 	objects = append(objects, fetched...)
 	if events == nil {
-		events = []Event{}
+		events = []kube.Event{}
 	}
 	if nodes == nil {
-		nodes = []Node{}
+		nodes = []kube.Node{}
 	}
 	if pvs == nil {
-		pvs = []PV{}
+		pvs = []kube.PV{}
 	}
-	cluster := Cluster{
+	cluster := kube.Cluster{
 		Current: base.Current, Contexts: base.Contexts, Namespaces: namespaces,
 		Nodes: nodes, PVs: pvs, Events: events, Objects: objects,
 	}

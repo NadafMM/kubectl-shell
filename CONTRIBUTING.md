@@ -37,10 +37,10 @@ CI details: [docs/ci.md](docs/ci.md).
 ## Making changes
 
 1. **Fork** and branch from `main` (`feat/…`, `fix/…`, `docs/…`).
-2. **Edit** `cmd/kube` and `internal/kube`.
+2. **Edit** `cmd/kube` and the matching `internal/kube` / `internal/kube/<area>` package.
 3. **Add or update tests** beside the code (tests use `scripts/fake-kubectl.mjs`; no real cluster required for unit tests).
 4. **Keep scope tight** — one logical change per PR.
-5. **Run** `go test ./cmd/kube ./internal/kube` locally.
+5. **Run** `go test ./cmd/kube ./internal/kube/...` locally.
 
 ## Pull requests
 
@@ -55,7 +55,8 @@ CI details: [docs/ci.md](docs/ci.md).
 | -------------------- | -------------------------------------------------------- |
 | `VERSION`            | Release version (must match `package.json` and git tags) |
 | `cmd/kube/`          | Go CLI entry (installed `kube`)                          |
-| `internal/kube/`     | Completion, plan/ask, view, sandbox, mcp, record, etc.   |
+| `internal/kube/`     | Shared core (parse, policy, redact, session state)       |
+| `internal/kube/*/`   | Feature packages: live, plan, complete, view, mcp, …     |
 | `scripts/packaging/` | Cross-compile release tarballs and Homebrew formula      |
 | `scripts/`           | Fake kubectl, e2e helpers, docs check                    |
 | `Makefile`           | `build` / `test` / `install` / `dist`                    |

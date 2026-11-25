@@ -17,7 +17,7 @@ Bump by editing `VERSION` and `package.json` together, then tag `v$(cat VERSION)
 
 ```bash
 make build    # bin/kube with embedded version
-make test     # go test ./cmd/kube ./internal/kube
+make test     # go test ./cmd/kube ./internal/kube/...
 make install  # go install with the same ldflags
 make dist     # cross-compiled tarballs under dist/
 make clean
@@ -28,12 +28,19 @@ make clean
 | Path                            | Role                                            |
 | ------------------------------- | ----------------------------------------------- |
 | `cmd/kube/`                     | CLI entrypoint (`kube`)                         |
-| `internal/kube/`                | Library used by the CLI (completion, plan, …)   |
+| `internal/kube/`                | Shared core (parse, policy, redact, state)      |
+| `internal/kube/live/`           | kubectl process + live completion cache         |
+| `internal/kube/plan/`           | PlanCommand, blast radius, ask/diagnose         |
+| `internal/kube/complete/`       | Word completion                                 |
+| `internal/kube/view/`           | Interactive resource table                      |
+| `internal/kube/mcp/`            | MCP JSON-RPC server                             |
+| `internal/kube/undo/`           | Undo snapshots                                  |
+| `internal/kube/sandbox/`        | Local kind sandbox                              |
 | `scripts/packaging/`            | Release tarball builder and Homebrew formula    |
 | `scripts/`                      | e2e / fake-kubectl / docs checks (not shipping) |
 | `.github/workflows/release.yml` | Tag `v*.*.*` → GitHub Release + tap bump        |
 
-`internal/kube` stays one package today so call sites stay simple. New features should keep files grouped by concern (`view_*.go`, `redact*.go`, …) so a later split into `internal/kube/<concern>` packages stays mechanical.
+Put new shared helpers in `internal/kube`. Put feature logic in the matching `internal/kube/<area>` package.
 
 ## Homebrew
 

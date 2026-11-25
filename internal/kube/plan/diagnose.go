@@ -1,14 +1,17 @@
-package kube
+package plan
 
 import (
 	"encoding/json"
+	"github.com/NadafMM/kubectl-shell/internal/kube"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+
+	// FindingRule names one diagnosis cause.
+	"github.com/NadafMM/kubectl-shell/internal/kube/live"
 )
 
-// FindingRule names one diagnosis cause.
 type FindingRule string
 
 const (
@@ -803,7 +806,7 @@ func InspectPods(input InspectPodsInput) *Diagnosis {
 }
 
 // AskAdvice prefers live diagnosis, then falls back to static Advise.
-func AskAdvice(question string, cluster Cluster, ctx []string) Advice {
+func AskAdvice(question string, cluster kube.Cluster, ctx []string) Advice {
 	var known []string
 	for _, item := range cluster.Objects {
 		if item.Kind == "pod" {
@@ -811,7 +814,7 @@ func AskAdvice(question string, cluster Cluster, ctx []string) Advice {
 		}
 	}
 	named := PodNameFrom(question, known)
-	ns := NamespaceOf(cluster)
+	ns := kube.NamespaceOf(cluster)
 	for _, item := range cluster.Objects {
 		if item.Kind == "pod" && item.Name == named && item.NS != "" {
 			ns = item.NS
@@ -830,7 +833,7 @@ func AskAdvice(question string, cluster Cluster, ctx []string) Advice {
 		Namespace:  ns,
 		KnownNames: known,
 		FetchJSON: func(args []string) (bool, any) {
-			result := RunJson(withCtx(args), 3000)
+			result := live.RunJson(withCtx(args), 3000)
 			if !result.OK {
 				return false, nil
 			}
@@ -841,7 +844,7 @@ func AskAdvice(question string, cluster Cluster, ctx []string) Advice {
 			return true, parsed
 		},
 		FetchText: func(args []string) string {
-			_, stdout, _ := CaptureLive(withCtx(args))
+			_, stdout, _ := live.CaptureLive(withCtx(args))
 			return stdout
 		},
 	})

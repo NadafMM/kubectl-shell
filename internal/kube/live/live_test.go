@@ -1,4 +1,4 @@
-package kube
+package live
 
 import (
 	"os"
@@ -121,7 +121,7 @@ func withFake(t *testing.T, run func(log string)) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("KUBE_SHELL_KUBECTL", "node")
-	t.Setenv("KUBE_SHELL_NODE_SCRIPT", filepath.Join("..", "..", "scripts", "fake-kubectl.mjs"))
+	t.Setenv("KUBE_SHELL_NODE_SCRIPT", filepath.Join("..", "..", "..", "scripts", "fake-kubectl.mjs"))
 	t.Setenv("KUBE_FAKE_LOG", log)
 	t.Setenv("KUBE_FAKE_FIXTURE", "up")
 	os.Unsetenv("KUBE_FAKE_FAIL")

@@ -1,7 +1,9 @@
-package kube
+package plan
 
 import (
 	"encoding/json"
+	"github.com/NadafMM/kubectl-shell/internal/kube"
+	"github.com/NadafMM/kubectl-shell/internal/kube/live"
 	"strings"
 	"testing"
 )
@@ -51,11 +53,11 @@ func serviceJSON(name string, selector map[string]any, ns string) map[string]any
 }
 
 func TestBlastSkipsGet(t *testing.T) {
-	plan := PlanCommand("kubectl get pods", InitialCluster())
+	plan := PlanCommand("kubectl get pods", kube.InitialCluster())
 	calls := 0
-	blast := BlastRadius(plan, []string{"get", "pods"}, func([]string) KubectlJSONResult {
+	blast := BlastRadius(plan, []string{"get", "pods"}, func([]string) live.KubectlJSONResult {
 		calls++
-		return KubectlJSONResult{OK: false, Error: "no"}
+		return live.KubectlJSONResult{OK: false, Error: "no"}
 	}, nil)
 	if blast.Status != "skipped" || blast.Reason != "not a delete" || FormatBlast(blast) != "" || calls != 0 {
 		t.Fatalf("%#v calls=%d", blast, calls)
@@ -64,10 +66,10 @@ func TestBlastSkipsGet(t *testing.T) {
 
 func TestBlastNoName(t *testing.T) {
 	for _, args := range [][]string{{"delete"}, {"delete", "pod"}} {
-		plan := PlanCommand("kubectl "+strings.Join(args, " "), InitialCluster())
-		blast := BlastRadius(plan, args, func([]string) KubectlJSONResult {
+		plan := PlanCommand("kubectl "+strings.Join(args, " "), kube.InitialCluster())
+		blast := BlastRadius(plan, args, func([]string) live.KubectlJSONResult {
 			t.Fatal("kubectl")
-			return KubectlJSONResult{}
+			return live.KubectlJSONResult{}
 		}, nil)
 		if blast.Status != "skipped" || blast.Reason != "no name or selector" {
 			t.Fatal(blast)
@@ -80,10 +82,10 @@ func TestBlastNoName(t *testing.T) {
 
 func TestBlastKustomizeSkipped(t *testing.T) {
 	for _, args := range [][]string{{"delete", "-k", "dir"}, {"delete", "--kustomize=dir"}} {
-		plan := PlanCommand("kubectl "+strings.Join(args, " "), InitialCluster())
-		blast := BlastRadius(plan, args, func([]string) KubectlJSONResult {
+		plan := PlanCommand("kubectl "+strings.Join(args, " "), kube.InitialCluster())
+		blast := BlastRadius(plan, args, func([]string) live.KubectlJSONResult {
 			t.Fatal("kubectl")
-			return KubectlJSONResult{}
+			return live.KubectlJSONResult{}
 		}, nil)
 		if blast.Reason != "kustomize delete (-k) is not expanded" {
 			t.Fatal(args, blast.Reason)
@@ -92,9 +94,9 @@ func TestBlastKustomizeSkipped(t *testing.T) {
 }
 
 func TestBlastUnknownTarget(t *testing.T) {
-	plan := PlanCommand("kubectl delete pod missing", InitialCluster())
-	blast := BlastRadius(plan, []string{"delete", "pod", "missing"}, func([]string) KubectlJSONResult {
-		return KubectlJSONResult{OK: false, Error: `pods "missing" not found`}
+	plan := PlanCommand("kubectl delete pod missing", kube.InitialCluster())
+	blast := BlastRadius(plan, []string{"delete", "pod", "missing"}, func([]string) live.KubectlJSONResult {
+		return live.KubectlJSONResult{OK: false, Error: `pods "missing" not found`}
 	}, nil)
 	if blast.Status != "unknown" || blast.Reason != `kubectl get pod: pods "missing" not found` {
 		t.Fatal(blast)
@@ -105,16 +107,16 @@ func TestBlastUnknownTarget(t *testing.T) {
 }
 
 func TestBlastConfigMapNoServices(t *testing.T) {
-	plan := PlanCommand("kubectl delete configmap app", InitialCluster())
+	plan := PlanCommand("kubectl delete configmap app", kube.InitialCluster())
 	var gets int
-	blast := BlastRadius(plan, []string{"delete", "configmap", "app"}, func(args []string) KubectlJSONResult {
+	blast := BlastRadius(plan, []string{"delete", "configmap", "app"}, func(args []string) live.KubectlJSONResult {
 		if args[0] == "get" {
 			gets++
-			return KubectlJSONResult{OK: true, JSON: raw(map[string]any{
+			return live.KubectlJSONResult{OK: true, JSON: raw(map[string]any{
 				"kind": "ConfigMap", "metadata": map[string]any{"name": "app", "namespace": "default"},
 			})}
 		}
-		return KubectlJSONResult{OK: true, JSON: raw(map[string]any{"kind": "ConfigMap", "metadata": map[string]any{"name": "app"}})}
+		return live.KubectlJSONResult{OK: true, JSON: raw(map[string]any{"kind": "ConfigMap", "metadata": map[string]any{"name": "app"}})}
 	}, nil)
 	if blast.Status != "ok" || blast.ObjectCount != 1 || gets != 1 {
 		t.Fatalf("%#v gets=%d", blast, gets)
@@ -131,26 +133,26 @@ func TestBlastConfigMapNoServices(t *testing.T) {
 func TestBlastServiceReadyPods(t *testing.T) {
 	pod := podJSON("checkout-abc", map[string]string{"app": "checkout"}, true)
 	sibling := podJSON("checkout-def", map[string]string{"app": "checkout"}, true)
-	plan := PlanCommand("kubectl delete pod checkout-abc", InitialCluster())
-	blast := BlastRadius(plan, []string{"delete", "pod", "checkout-abc"}, func(args []string) KubectlJSONResult {
+	plan := PlanCommand("kubectl delete pod checkout-abc", kube.InitialCluster())
+	blast := BlastRadius(plan, []string{"delete", "pod", "checkout-abc"}, func(args []string) live.KubectlJSONResult {
 		joined := strings.Join(args, " ")
 		switch {
 		case strings.HasPrefix(joined, "get pod checkout-abc"):
-			return KubectlJSONResult{OK: true, JSON: raw(pod)}
+			return live.KubectlJSONResult{OK: true, JSON: raw(pod)}
 		case strings.HasPrefix(joined, "get services"):
-			return KubectlJSONResult{OK: true, JSON: raw(map[string]any{
+			return live.KubectlJSONResult{OK: true, JSON: raw(map[string]any{
 				"kind":  "ServiceList",
 				"items": []any{serviceJSON("checkout", map[string]any{"app": "checkout"}, "")},
 			})}
 		case strings.HasPrefix(joined, "get pods -n default"):
-			return KubectlJSONResult{OK: true, JSON: raw(map[string]any{"kind": "PodList", "items": []any{pod, sibling}})}
+			return live.KubectlJSONResult{OK: true, JSON: raw(map[string]any{"kind": "PodList", "items": []any{pod, sibling}})}
 		case strings.HasPrefix(joined, "get pdb"):
-			return KubectlJSONResult{OK: true, JSON: raw(map[string]any{"kind": "PodDisruptionBudgetList", "items": []any{}})}
+			return live.KubectlJSONResult{OK: true, JSON: raw(map[string]any{"kind": "PodDisruptionBudgetList", "items": []any{}})}
 		case args[0] == "delete":
-			return KubectlJSONResult{OK: true, JSON: raw(map[string]any{"kind": "Pod", "metadata": map[string]any{"name": "checkout-abc"}})}
+			return live.KubectlJSONResult{OK: true, JSON: raw(map[string]any{"kind": "Pod", "metadata": map[string]any{"name": "checkout-abc"}})}
 		default:
 			t.Fatalf("unexpected %v", args)
-			return KubectlJSONResult{}
+			return live.KubectlJSONResult{}
 		}
 	}, nil)
 	if blast.Status != "ok" || len(blast.Services) != 1 {
@@ -165,10 +167,10 @@ func TestBlastServiceReadyPods(t *testing.T) {
 }
 
 func TestBlastMixedSlashSkipped(t *testing.T) {
-	plan := PlanCommand("kubectl delete pod/a deploy/b", InitialCluster())
-	blast := BlastRadius(plan, []string{"delete", "pod/a", "deploy/b"}, func([]string) KubectlJSONResult {
+	plan := PlanCommand("kubectl delete pod/a deploy/b", kube.InitialCluster())
+	blast := BlastRadius(plan, []string{"delete", "pod/a", "deploy/b"}, func([]string) live.KubectlJSONResult {
 		t.Fatal("kubectl")
-		return KubectlJSONResult{}
+		return live.KubectlJSONResult{}
 	}, nil)
 	if blast.Reason != "mixed resource kinds" {
 		t.Fatal(blast)
@@ -176,10 +178,10 @@ func TestBlastMixedSlashSkipped(t *testing.T) {
 }
 
 func TestBlastRemoteManifestSkipped(t *testing.T) {
-	plan := PlanCommand("kubectl delete -f https://example.com/a.yaml", InitialCluster())
-	blast := BlastRadius(plan, []string{"delete", "-f", "https://example.com/a.yaml"}, func([]string) KubectlJSONResult {
+	plan := PlanCommand("kubectl delete -f https://example.com/a.yaml", kube.InitialCluster())
+	blast := BlastRadius(plan, []string{"delete", "-f", "https://example.com/a.yaml"}, func([]string) live.KubectlJSONResult {
 		t.Fatal("kubectl")
-		return KubectlJSONResult{}
+		return live.KubectlJSONResult{}
 	}, nil)
 	if blast.Reason != "remote manifest URLs are not expanded" {
 		t.Fatal(blast)
@@ -187,7 +189,7 @@ func TestBlastRemoteManifestSkipped(t *testing.T) {
 }
 
 func TestParseManifestYAML(t *testing.T) {
-	refs := ParseManifest("kind: Deployment\nmetadata:\n  name: web\n  namespace: app\n")
+	refs := kube.ParseManifest("kind: Deployment\nmetadata:\n  name: web\n  namespace: app\n")
 	if len(refs) != 1 || refs[0].Kind != "Deployment" || refs[0].Name != "web" || refs[0].Namespace != "app" {
 		t.Fatal(refs)
 	}

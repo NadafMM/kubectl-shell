@@ -44,6 +44,19 @@ func agentAllow(policy *Policy) []string {
 	return policy.Agents.Allow
 }
 
+// mcpDefaultAllow is used when MCP policy omits agents.allow.
+var mcpDefaultAllow = []string{"get", "describe", "logs", "plan"}
+
+// McpAllow is the verb allow-list for MCP (agents.allow, or get/describe/logs/plan).
+func McpAllow(policy *Policy) []string {
+	if policy != nil && policy.Agents != nil && len(policy.Agents.Allow) > 0 {
+		return policy.Agents.Allow
+	}
+	return append([]string{}, mcpDefaultAllow...)
+}
+
+func mcpAllow(policy *Policy) []string { return McpAllow(policy) }
+
 func writeRequires(policy *Policy) string {
 	if policy == nil || policy.Agents == nil {
 		return "none"

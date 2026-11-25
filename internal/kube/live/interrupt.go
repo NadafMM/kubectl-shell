@@ -1,4 +1,4 @@
-package kube
+package live
 
 import (
 	"os"

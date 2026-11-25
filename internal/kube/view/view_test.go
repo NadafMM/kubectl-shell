@@ -1,25 +1,27 @@
-package kube
+package view
 
 import (
 	"bytes"
+	"github.com/NadafMM/kubectl-shell/internal/kube"
+	"github.com/NadafMM/kubectl-shell/internal/kube/plan"
 	"strings"
 	"testing"
 )
 
-func testViewCluster() Cluster {
-	return Cluster{
+func testViewCluster() kube.Cluster {
+	return kube.Cluster{
 		Current: "minikube",
-		Contexts: []Context{
+		Contexts: []kube.Context{
 			{Name: "minikube", Cluster: "minikube", User: "minikube", Namespace: "default"},
 		},
-		Namespaces: []Namespace{
+		Namespaces: []kube.Namespace{
 			{Name: "default", Status: "Active", Age: "1d"},
 			{Name: "app", Status: "Active", Age: "1d"},
 		},
-		Nodes: []Node{
+		Nodes: []kube.Node{
 			{Name: "node-1", Status: "Ready", Roles: "worker", Age: "1d", Version: "v1.31.1", Schedulable: true},
 		},
-		Objects: []KObject{
+		Objects: []kube.KObject{
 			{Kind: "pod", Name: "api", NS: "default", Age: "1d", Labels: map[string]string{}, Status: "Running"},
 			{Kind: "pod", Name: "worker-0", NS: "default", Age: "6h", Labels: map[string]string{}, Status: "CrashLoopBackOff"},
 			{Kind: "pod", Name: "checkout", NS: "app", Age: "2h", Labels: map[string]string{}, Status: "Pending"},
@@ -50,7 +52,7 @@ func TestDeployBoardListsWeb(t *testing.T) {
 }
 
 func TestDeletePlanForPodIsHighRisk(t *testing.T) {
-	plan := PlanCommand(DeleteEngineLine(Row{Kind: "pod", Name: "worker-0", NS: "default"}), testViewCluster())
+	plan := plan.PlanCommand(DeleteEngineLine(Row{Kind: "pod", Name: "worker-0", NS: "default"}), testViewCluster())
 	if plan.Risk != "high" || !strings.Contains(plan.Command, "delete pod worker-0") {
 		t.Fatalf("%+v", plan)
 	}

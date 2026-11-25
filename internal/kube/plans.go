@@ -74,7 +74,7 @@ func MintPlan(record PlanExpect, now time.Time) (string, error) {
 	if !ok {
 		return "", os.ErrInvalid
 	}
-	if err := writePrivate(path, string(raw)); err != nil {
+	if err := WritePrivate(path, string(raw)); err != nil {
 		return "", err
 	}
 	return id, nil

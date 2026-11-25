@@ -1,6 +1,7 @@
-package kube
+package complete
 
 import (
+	"github.com/NadafMM/kubectl-shell/internal/kube"
 	"math"
 	"regexp"
 	"sort"
@@ -10,15 +11,15 @@ import (
 type Completion struct {
 	Start      int
 	End        int
-	Candidates []Candidate
+	Candidates []kube.Candidate
 }
 
 const candidateLimit = 24
 
-func rank(prefix string, items []Candidate) []Candidate {
+func rank(prefix string, items []kube.Candidate) []kube.Candidate {
 	p := strings.ToLower(prefix)
 	type scored struct {
-		item  Candidate
+		item  kube.Candidate
 		score float64
 	}
 	var rows []scored
@@ -37,7 +38,7 @@ func rank(prefix string, items []Candidate) []Candidate {
 			}
 		case value == p:
 			score = 1200 + float64(item.Weight)/1000
-		case containsString(aliases, p):
+		case kube.ContainsString(aliases, p):
 			score = 1100
 		case strings.HasPrefix(value, p):
 			score = 800 - math.Min(float64(len(value)), 180) + float64(item.Weight)/100
@@ -56,7 +57,7 @@ func rank(prefix string, items []Candidate) []Candidate {
 		}
 		return rows[i].item.Value < rows[j].item.Value
 	})
-	var unique []Candidate
+	var unique []kube.Candidate
 	seen := map[string]bool{}
 	for _, row := range rows {
 		if seen[row.item.Value] {
@@ -70,7 +71,7 @@ func rank(prefix string, items []Candidate) []Candidate {
 	}
 	if len(unique) == 0 && len(p) >= 3 {
 		type near struct {
-			item Candidate
+			item kube.Candidate
 			dist int
 		}
 		var fuzzy []near
@@ -89,7 +90,7 @@ func rank(prefix string, items []Candidate) []Candidate {
 		if len(fuzzy) > 6 {
 			fuzzy = fuzzy[:6]
 		}
-		out := make([]Candidate, 0, len(fuzzy))
+		out := make([]kube.Candidate, 0, len(fuzzy))
 		for _, row := range fuzzy {
 			out = append(out, row.item)
 		}
@@ -147,18 +148,18 @@ func abs(n int) int {
 	return n
 }
 
-func valueItems(kind string, args []string, cluster Cluster, scope Scope, prefix string) []Candidate {
+func valueItems(kind string, args []string, cluster kube.Cluster, scope kube.Scope, prefix string) []kube.Candidate {
 	switch kind {
 	case "namespace":
-		out := make([]Candidate, 0, len(cluster.Namespaces))
+		out := make([]kube.Candidate, 0, len(cluster.Namespaces))
 		for _, item := range cluster.Namespaces {
-			out = append(out, Candidate{Value: item.Name, Detail: "Namespace", Kind: "value", Weight: 40})
+			out = append(out, kube.Candidate{Value: item.Name, Detail: "Namespace", Kind: "value", Weight: 40})
 		}
 		return out
 	case "context":
-		out := make([]Candidate, 0, len(cluster.Contexts))
+		out := make([]kube.Candidate, 0, len(cluster.Contexts))
 		for _, item := range cluster.Contexts {
-			out = append(out, Candidate{Value: item.Name, Detail: item.Cluster, Kind: "context", Weight: 40})
+			out = append(out, kube.Candidate{Value: item.Name, Detail: item.Cluster, Kind: "context", Weight: 40})
 		}
 		return out
 	case "output":
@@ -172,21 +173,21 @@ func valueItems(kind string, args []string, cluster Cluster, scope Scope, prefix
 		}
 		if len(names) == 0 {
 			for _, item := range cluster.Objects {
-				if item.Kind == "pod" && InScope(item.NS, scope) {
+				if item.Kind == "pod" && kube.InScope(item.NS, scope) {
 					for _, container := range item.Containers {
 						names[container.Name] = true
 					}
 				}
 			}
 		}
-		out := make([]Candidate, 0, len(names))
+		out := make([]kube.Candidate, 0, len(names))
 		for name := range names {
-			out = append(out, Candidate{Value: name, Detail: "Container", Kind: "value", Weight: 40})
+			out = append(out, kube.Candidate{Value: name, Detail: "Container", Kind: "value", Weight: 40})
 		}
 		sort.Slice(out, func(i, j int) bool { return out[i].Value < out[j].Value })
 		return out
 	case "file", "dir":
-		return ManifestCandidates(prefix, "")
+		return kube.ManifestCandidates(prefix, "")
 	case "selector":
 		return selectorItems(scope, cluster)
 	case "replicas":
@@ -194,7 +195,7 @@ func valueItems(kind string, args []string, cluster Cluster, scope Scope, prefix
 	case "tail":
 		return numbered([]string{"20", "50", "100", "200", "500"}, "Log lines", 50)
 	case "dryrun":
-		return []Candidate{
+		return []kube.Candidate{
 			{Value: "client", Detail: "Validate locally", Kind: "value", Weight: 60},
 			{Value: "server", Detail: "Validate on the API server", Kind: "value", Weight: 50},
 			{Value: "none", Detail: "Persist the change", Kind: "value", Weight: 20},
@@ -218,7 +219,7 @@ func valueItems(kind string, args []string, cluster Cluster, scope Scope, prefix
 	case "restart":
 		return plainValues([]string{"Always", "OnFailure", "Never"}, "Restart policy", 30)
 	case "literal":
-		return []Candidate{
+		return []kube.Candidate{
 			{Value: "LOG_LEVEL=info", Detail: "Example pair", Kind: "value", Weight: 20},
 			{Value: "color=blue", Detail: "Example pair", Kind: "value", Weight: 16},
 		}
@@ -229,7 +230,7 @@ func valueItems(kind string, args []string, cluster Cluster, scope Scope, prefix
 	case "level":
 		return plainValues([]string{"0", "2", "4", "6", "8"}, "Verbosity", 10)
 	case "field":
-		return []Candidate{
+		return []kube.Candidate{
 			{Value: "status.phase=Running", Detail: "Running pods", Kind: "value", Weight: 30},
 			{Value: "status.phase=Pending", Detail: "Pending pods", Kind: "value", Weight: 20},
 		}
@@ -244,27 +245,27 @@ func valueItems(kind string, args []string, cluster Cluster, scope Scope, prefix
 	}
 }
 
-func plainValues(values []string, detail string, weight int) []Candidate {
-	out := make([]Candidate, 0, len(values))
+func plainValues(values []string, detail string, weight int) []kube.Candidate {
+	out := make([]kube.Candidate, 0, len(values))
 	for _, value := range values {
-		out = append(out, Candidate{Value: value, Detail: detail, Kind: "value", Weight: weight})
+		out = append(out, kube.Candidate{Value: value, Detail: detail, Kind: "value", Weight: weight})
 	}
 	return out
 }
 
-func numbered(values []string, detail string, start int) []Candidate {
-	out := make([]Candidate, 0, len(values))
+func numbered(values []string, detail string, start int) []kube.Candidate {
+	out := make([]kube.Candidate, 0, len(values))
 	for i, value := range values {
-		out = append(out, Candidate{Value: value, Detail: detail, Kind: "value", Weight: start - i})
+		out = append(out, kube.Candidate{Value: value, Detail: detail, Kind: "value", Weight: start - i})
 	}
 	return out
 }
 
-func selectorItems(scope Scope, cluster Cluster) []Candidate {
+func selectorItems(scope kube.Scope, cluster kube.Cluster) []kube.Candidate {
 	seen := map[string]bool{}
-	var items []Candidate
+	var items []kube.Candidate
 	for _, object := range cluster.Objects {
-		if !InScope(object.NS, scope) {
+		if !kube.InScope(object.NS, scope) {
 			continue
 		}
 		keys := make([]string, 0, len(object.Labels))
@@ -278,28 +279,28 @@ func selectorItems(scope Scope, cluster Cluster) []Candidate {
 				continue
 			}
 			seen[pair] = true
-			items = append(items, Candidate{Value: pair, Detail: "Label selector", Kind: "value", Weight: 30})
+			items = append(items, kube.Candidate{Value: pair, Detail: "Label selector", Kind: "value", Weight: 30})
 		}
 	}
 	return items
 }
 
-func referencedPods(args []string, scope Scope, cluster Cluster) []KObject {
+func referencedPods(args []string, scope kube.Scope, cluster kube.Cluster) []kube.KObject {
 	names := map[string]bool{}
-	for _, word := range PositionalWords(args).Words {
+	for _, word := range kube.PositionalWords(args).Words {
 		names[word] = true
 	}
-	var out []KObject
+	var out []kube.KObject
 	for _, object := range cluster.Objects {
-		if object.Kind == "pod" && InScope(object.NS, scope) && names[object.Name] {
+		if object.Kind == "pod" && kube.InScope(object.NS, scope) && names[object.Name] {
 			out = append(out, object)
 		}
 	}
 	return out
 }
 
-func shellWords() []Candidate {
-	return []Candidate{
+func shellWords() []kube.Candidate {
+	return []kube.Candidate{
 		{Value: "bash", Detail: "Interactive shell", Kind: "command", Weight: 100},
 		{Value: "sh", Detail: "POSIX shell", Kind: "command", Weight: 80},
 		{Value: "ls", Detail: "List files", Kind: "command", Weight: 70},
@@ -314,8 +315,8 @@ func shellWords() []Candidate {
 
 var equalsFlag = regexp.MustCompile(`^(--?[A-Za-z0-9-]+)=(.*)$`)
 
-func Complete(line string, cursor int, cluster Cluster) Completion {
-	loc := Locate(line, cursor)
+func Complete(line string, cursor int, cluster kube.Cluster) Completion {
+	loc := kube.Locate(line, cursor)
 	prior := make([]string, 0, loc.Index)
 	for _, token := range loc.Tokens[:loc.Index] {
 		prior = append(prior, token.Text)
@@ -327,11 +328,11 @@ func Complete(line string, cursor int, cluster Cluster) Completion {
 	base := Completion{Start: loc.Start, End: loc.End}
 
 	if len(prior) == 0 {
-		items := []Candidate{{
+		items := []kube.Candidate{{
 			Value: "kubectl", Detail: "Kubernetes CLI", Kind: "command", Weight: 100, Aliases: []string{"k"},
 		}}
-		items = append(items, shellCommandCandidates(prefix)...)
-		items = append(items, Candidate{Value: "help", Detail: "How Tab completion works here", Kind: "command", Weight: 10})
+		items = append(items, kube.ShellCommandCandidates(prefix)...)
+		items = append(items, kube.Candidate{Value: "help", Detail: "How Tab completion works here", Kind: "command", Weight: 10})
 		base.Candidates = rank(prefix, items)
 		return base
 	}
@@ -339,39 +340,39 @@ func Complete(line string, cursor int, cluster Cluster) Completion {
 	bin := prior[0]
 	if bin == "view" || bin == "ui" {
 		if len(prior) == 1 {
-			base.Candidates = rank(prefix, append([]Candidate{}, ViewArgs...))
+			base.Candidates = rank(prefix, append([]kube.Candidate{}, kube.ViewArgs...))
 			return base
 		}
 	}
 
 	if bin != "kubectl" && bin != "k" && bin != "help" {
-		shell := shellCommandCandidates(bin)
+		shell := kube.ShellCommandCandidates(bin)
 		if len(shell) > 0 {
 			base.Candidates = rank(prefix, shell)
 			return base
 		}
-		base.Candidates = rank(prefix, append(shellCommandCandidates(bin), Candidate{
+		base.Candidates = rank(prefix, append(kube.ShellCommandCandidates(bin), kube.Candidate{
 			Value: "kubectl", Detail: "Commands start with kubectl", Kind: "command", Weight: 60,
 		}))
 		return base
 	}
 
 	if bin == "help" {
-		base.Candidates = rank(prefix, verbCandidates())
+		base.Candidates = rank(prefix, kube.VerbCandidates())
 		return base
 	}
 
 	args := prior[1:]
-	scope := ScopeOf(append([]string{"kubectl"}, args...), cluster)
+	scope := kube.ScopeOf(append([]string{"kubectl"}, args...), cluster)
 
 	if equals := equalsFlag.FindStringSubmatch(prefix); equals != nil {
 		flag := equals[1]
-		kind := TakesOf(flag, VerbOf(args))
-		var values []Candidate
+		kind := kube.TakesOf(flag, kube.VerbOf(args))
+		var values []kube.Candidate
 		if kind != "" {
 			values = valueItems(kind, args, cluster, scope, equals[2])
 		}
-		mapped := make([]Candidate, 0, len(values))
+		mapped := make([]kube.Candidate, 0, len(values))
 		for _, item := range values {
 			item.Value = flag + "=" + item.Value
 			mapped = append(mapped, item)
@@ -381,7 +382,7 @@ func Complete(line string, cursor int, cluster Cluster) Completion {
 	}
 
 	if strings.HasPrefix(prefix, "-") {
-		base.Candidates = rank(prefix, FlagItems(VerbOf(args)))
+		base.Candidates = rank(prefix, kube.FlagItems(kube.VerbOf(args)))
 		return base
 	}
 
@@ -389,28 +390,28 @@ func Complete(line string, cursor int, cluster Cluster) Completion {
 	if len(args) > 0 {
 		previous = args[len(args)-1]
 	}
-	verb := VerbOf(args)
-	if previous != "" && TakesOf(previous, verb) != "" && !strings.Contains(previous, "=") {
-		kind := TakesOf(previous, verb)
+	verb := kube.VerbOf(args)
+	if previous != "" && kube.TakesOf(previous, verb) != "" && !strings.Contains(previous, "=") {
+		kind := kube.TakesOf(previous, verb)
 		base.Candidates = rank(prefix, valueItems(kind, args[:len(args)-1], cluster, scope, prefix))
 		return base
 	}
 
-	parsed := PositionalWords(args)
+	parsed := kube.PositionalWords(args)
 	if parsed.AfterDashDash {
 		base.Candidates = rank(prefix, shellWords())
 		return base
 	}
 	if len(parsed.Words) == 0 {
-		base.Candidates = rank(prefix, verbCandidates())
+		base.Candidates = rank(prefix, kube.VerbCandidates())
 		return base
 	}
 	rest := parsed.Words[1:]
 	if strings.Contains(prefix, "/") && len(rest) == 0 {
 		slash := strings.Index(prefix, "/")
-		base.Candidates = rank(prefix, SlashNames(prefix[:slash], prefix[slash+1:], scope, cluster))
+		base.Candidates = rank(prefix, kube.SlashNames(prefix[:slash], prefix[slash+1:], scope, cluster))
 		return base
 	}
-	base.Candidates = rank(prefix, CandidatesFor(verb, rest, args, scope, cluster, prefix))
+	base.Candidates = rank(prefix, kube.CandidatesFor(verb, rest, args, scope, cluster, prefix))
 	return base
 }

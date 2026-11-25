@@ -1,7 +1,8 @@
-package kube
+package undo
 
 import (
 	"encoding/json"
+	"github.com/NadafMM/kubectl-shell/internal/kube"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,10 +44,10 @@ func TestRememberUndoSecretRefused(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("KUBE_SHELL_KUBECTL", "node")
-	t.Setenv("KUBE_SHELL_NODE_SCRIPT", filepath.Join("..", "..", "scripts", "fake-kubectl.mjs"))
+	t.Setenv("KUBE_SHELL_NODE_SCRIPT", filepath.Join("..", "..", "..", "scripts", "fake-kubectl.mjs"))
 	t.Setenv("KUBE_FAKE_FIXTURE", "up")
 	t.Setenv("KUBE_FAKE_UNDO", "1")
-	cluster := Cluster{Current: "minikube", Contexts: []Context{{Name: "minikube", Namespace: "default"}}}
+	cluster := kube.Cluster{Current: "minikube", Contexts: []kube.Context{{Name: "minikube", Namespace: "default"}}}
 	RememberUndo([]string{"label", "secret", "token", "env=prod"}, cluster, "sec1", time.Now())
 	record, ok := LatestUndo(time.Now())
 	if !ok || record.Refused == "" || !strings.Contains(UndoRefusal(record), "Secrets or ConfigMaps") {
@@ -59,10 +60,10 @@ func TestRememberUndoDeploymentRevision(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("KUBE_SHELL_KUBECTL", "node")
-	t.Setenv("KUBE_SHELL_NODE_SCRIPT", filepath.Join("..", "..", "scripts", "fake-kubectl.mjs"))
+	t.Setenv("KUBE_SHELL_NODE_SCRIPT", filepath.Join("..", "..", "..", "scripts", "fake-kubectl.mjs"))
 	t.Setenv("KUBE_FAKE_FIXTURE", "up")
 	t.Setenv("KUBE_FAKE_UNDO", "1")
-	cluster := Cluster{Current: "minikube", Contexts: []Context{{Name: "minikube", Namespace: "default"}}}
+	cluster := kube.Cluster{Current: "minikube", Contexts: []kube.Context{{Name: "minikube", Namespace: "default"}}}
 	RememberUndo([]string{"set", "image", "deployment/checkout", "nginx=nginx:1.2"}, cluster, "dep1", time.Now())
 	record, ok := LatestUndo(time.Now())
 	if !ok || record.Revision != "3" || record.Snapshot == nil {
@@ -77,7 +78,7 @@ func TestRememberUndoDeploymentRevision(t *testing.T) {
 		t.Fatal(string(body))
 	}
 	args := RestoreArgs(record)
-	if args[0] != "rollout" || !containsString(args, "--to-revision=3") || !containsString(args, "--context") {
+	if args[0] != "rollout" || !kube.ContainsString(args, "--to-revision=3") || !kube.ContainsString(args, "--context") {
 		t.Fatal(args)
 	}
 }

@@ -298,7 +298,7 @@ func CandidatesFor(verb string, rest, _ []string, scope Scope, cluster Cluster, 
 	case "apply", "diff", "replace":
 		return fillManifest(ctx)
 	case "help":
-		return verbCandidates()
+		return VerbCandidates()
 	case "kustomize":
 		var dirs []Candidate
 		for _, item := range ManifestCandidates(ctx.prefix, "") {
@@ -500,7 +500,8 @@ func fillPodish(ctx fillCtx) []Candidate {
 	return append(pods, workloadSlash([]string{"deployment", "statefulset", "job"}, ctx.scope, ctx.cluster)...)
 }
 
-func verbCandidates() []Candidate {
+// VerbCandidates completes kubectl verbs from the built-in grammar.
+func VerbCandidates() []Candidate {
 	out := make([]Candidate, 0, len(Verbs))
 	for _, item := range Verbs {
 		out = append(out, Candidate{Value: item.Value, Detail: item.Detail, Kind: "verb", Weight: item.Weight})
