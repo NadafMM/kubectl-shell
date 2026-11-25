@@ -19,6 +19,7 @@ var ShellCommands = []ShellCommand{
 	{Value: "reset", Detail: "Refresh names from the cluster", Weight: 84},
 	{Value: "audit", Detail: "Show recent redacted command records", Weight: 70},
 	{Value: "undo", Detail: "Restore the previous saved object", Weight: 68},
+	{Value: "record", Detail: "Record commands that actually ran", Weight: 66},
 	{Value: "help", Detail: "List shell commands", Weight: 50},
 	{Value: "clear", Detail: "Clear the screen", Weight: 40},
 	{Value: "exit", Detail: "Leave the shell", Weight: 30, Aliases: []string{"quit"}},

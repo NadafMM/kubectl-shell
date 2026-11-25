@@ -109,6 +109,8 @@ func runUserLine(line string, cluster kube.Cluster, host lineHost) lineResult {
 		return undoLine(trimmed, cluster, host)
 	case "audit":
 		return auditLine(trimmed, cluster)
+	case "record":
+		return recordLine(trimmed, cluster)
 	case "ns", "ctx":
 		name := strings.TrimSpace(strings.TrimPrefix(trimmed, meta))
 		name = strings.TrimSpace(name)
@@ -258,6 +260,45 @@ func undoLine(trimmed string, cluster kube.Cluster, host lineHost) lineResult {
 	return lineResult{output: "undo failed", ok: false, cluster: cluster}
 }
 
+func recordLine(trimmed string, cluster kube.Cluster) lineResult {
+	parts := strings.Fields(trimmed)
+	action := "on"
+	if len(parts) > 1 {
+		action = parts[1]
+	}
+	if action == "off" {
+		file := kube.StopRecord()
+		if file == "" {
+			return lineResult{output: "not recording", ok: true, cluster: cluster}
+		}
+		return lineResult{output: "recording stopped " + file, ok: true, cluster: cluster}
+	}
+	if action != "on" {
+		return lineResult{output: "usage: record on|off", ok: false, cluster: cluster}
+	}
+	file := ""
+	if len(parts) > 2 {
+		file = parts[2]
+	}
+	if file == "" {
+		ctx := cluster.Current
+		if ctx == "" {
+			ctx = "none"
+		}
+		file = kube.SessionPath(ctx, time.Now())
+	}
+	ns := kube.NamespaceOf(cluster)
+	if ns == "" {
+		ns = "default"
+	}
+	ctx := cluster.Current
+	if ctx == "" {
+		ctx = "none"
+	}
+	started := kube.StartRecord(file, ctx, ns, time.Now().UTC().Format(time.RFC3339Nano))
+	return lineResult{output: "recording " + started, ok: true, cluster: cluster}
+}
+
 func auditLine(trimmed string, cluster kube.Cluster) lineResult {
 	parts := strings.Fields(trimmed)
 	if len(parts) > 1 && parts[1] != "tail" {
@@ -351,6 +392,7 @@ func executeEngine(engineLine string, cluster kube.Cluster, scope *kube.ShellSco
 		return lineResult{output: "refused: " + planned.Verb + " is not allowed for agents", ok: false, cluster: cluster}
 	}
 	needsPlan := host.agent && host.policy != nil && host.policy.Agents != nil && host.policy.Agents.WriteRequires == "approved-plan" && planned.Mutating
+	blastText := ""
 	if needsPlan {
 		if host.planID == "" {
 			writeAudit("denied-policy", "none", nil)
@@ -368,6 +410,7 @@ func executeEngine(engineLine string, cluster kube.Cluster, scope *kube.ShellSco
 		text := kube.FormatPlan(planned)
 		if wantsBlast(planned) {
 			if extra := kube.FormatBlast(liveBlast(planned, argv)); extra != "" {
+				blastText = extra
 				text += "\n" + extra
 			}
 		}
@@ -409,5 +452,16 @@ func executeEngine(engineLine string, cluster kube.Cluster, scope *kube.ShellSco
 		decision = "dry-run"
 	}
 	writeAudit(decision, approver, &code)
+	entry := kube.RunbookEntry{
+		Decision: decision, Verb: planned.Verb,
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+		Context:   planned.Context, Namespace: planned.Namespace,
+		Command: kube.RedactCommand(argv), Risk: planned.Risk, ExitCode: &code,
+		Blast: blastText,
+	}
+	if planned.Mutating {
+		entry.Summary = planned.Summary
+	}
+	kube.NoteRan(entry)
 	return lineResult{ok: code == 0, cluster: kube.ApplyLiveContext(cluster)}
 }

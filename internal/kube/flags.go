@@ -10,6 +10,7 @@ type LeadingFlags struct {
 	ConfirmContext string
 	Sandbox        bool
 	Sample         bool
+	Record         string
 	Rest           []string
 	Error          string
 }
@@ -76,8 +77,7 @@ func ParseLeadingFlags(argv []string) LeadingFlags {
 			case "--confirm-context":
 				parsed.ConfirmContext = value
 			case "--record":
-				parsed.Error = "kube: --record is not available yet"
-				return parsed
+				parsed.Record = value
 			}
 			continue
 		}
