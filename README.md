@@ -10,7 +10,7 @@
 
 ## Requirements
 
-- **Node.js 22+** (Homebrew installs its own Node dependency)
+- **Go 1.22+** to build from source (Homebrew installs Go as a build dependency)
 - **`kubectl`** on `PATH`
 - A **reachable cluster** in the current kubeconfig (no offline or practice mode)
 
@@ -26,16 +26,18 @@ kube --version
 
 Upgrade: `brew update && brew upgrade kubectl-shell`
 
-**From source (any OS, including Windows):**
+**From a release binary:** download the matching `kubectl-shell-<version>-<os>-<arch>.tar.gz` from [Releases](https://github.com/NadafMM/kubectl-shell/releases), extract, and put `kube` on your `PATH`.
+
+**From source:**
 
 ```bash
 git clone https://github.com/NadafMM/kubectl-shell.git
 cd kubectl-shell
-npm install -g .
-kube --version
+go build -o kube ./cmd/kube
+./kube --version
 ```
 
-The bundle in `cli/kube.cjs` is committed; no build step is required to install. Release assets also include `kubectl-shell-*.tar.gz` and a standalone `kube.cjs`.
+Or: `go install github.com/NadafMM/kubectl-shell/cmd/kube@latest`
 
 `help`, `--version`, and `completion` work without a cluster; other commands need a live API.
 
@@ -105,6 +107,15 @@ Details: [docs/security/threat-model.md](docs/security/threat-model.md). Report 
 
 ## Develop
 
+The installed `kube` is the Go binary. A TypeScript CLI remains in-tree for tests and the transitional Node package until a follow-up cleanup removes it.
+
+```bash
+go test ./cmd/kube ./internal/kube
+go build -o bin/kube ./cmd/kube
+```
+
+Legacy TypeScript checks (still required in CI until cleanup):
+
 ```bash
 npm ci
 npm run typecheck
@@ -112,13 +123,6 @@ npm run build && npm test
 npm run coverage
 npm run lint
 npm run e2e:tty   # Linux/macOS; requires Python 3
-```
-
-The Go port is started beside this CLI and is not the installed `kube` yet. It completes words, prints shell scripts, answers `plan` and `ask` (including live pod diagnosis for crashes, OOM, image pulls, config errors, pending, and probes), runs kubectl for one-shot commands, opens `view` / `ui`, opens the interactive shell (or a stdin script when there is no TTY), manages `sandbox` / `--sandbox`, serves `mcp` JSON-RPC (`kube_context`, `kube_plan`, `kube_execute`), and can `record` a redacted Markdown runbook. Shell `ns` / `ctx` change scope for that session only. Policy, `--plan-id`, audit, and `undo` apply. High-risk and guarded verbs ask before they run unless `--yes` is set. Reads keep the completion cache; writes clear it. Delete, drain, and scale-to-zero plans include a blast-radius report. Secret and ConfigMap MCP responses are redacted. Piped kubectl stdout is redacted when `KUBE_SHELL_REDACT_STDOUT` is set (same as the TypeScript CLI).
-
-```bash
-go test ./cmd/kube ./internal/kube
-go build -o bin/kube ./cmd/kube
 ```
 
 CI overview: [docs/ci.md](docs/ci.md). The demo GIF is produced from [`docs/demo.tape`](docs/demo.tape) (VHS) against a real cluster.

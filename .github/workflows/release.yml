@@ -10,26 +10,23 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    outputs:
-      sha256: ${{ steps.pkg.outputs.sha256 }}
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
       - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run build
-      - run: git diff --exit-code -- cli/kube.cjs
       - run: npm test
-      - id: pkg
-        run: node scripts/package-release.mjs >> "$GITHUB_OUTPUT"
+      - run: go test ./cmd/kube ./internal/kube
+      - run: node scripts/package-release.mjs
       - uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: |
-            ${{ steps.pkg.outputs.path }}
-            cli/kube.cjs
+          files: dist/kubectl-shell-*.tar.gz
 
   homebrew-tap:
     needs: github-release
@@ -63,7 +60,9 @@ jobs:
         if: steps.gate.outputs.enabled == 'true'
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          node scripts/render-formula.mjs "${VERSION}" "${{ needs.github-release.outputs.sha256 }}" > tap/Formula/kubectl-shell.rb
+          curl -fsSL "https://github.com/NadafMM/kubectl-shell/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz" -o /tmp/kubectl-shell-src.tgz
+          SHA="$(sha256sum /tmp/kubectl-shell-src.tgz | cut -d' ' -f1)"
+          node scripts/render-formula.mjs "${VERSION}" "${SHA}" > tap/Formula/kubectl-shell.rb
       - name: Commit and push tap
         if: steps.gate.outputs.enabled == 'true'
         working-directory: tap
