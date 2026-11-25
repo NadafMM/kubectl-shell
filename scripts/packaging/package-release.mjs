@@ -4,13 +4,17 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const version = fs.readFileSync(path.join(root, "VERSION"), "utf8").trim();
 const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
-const version = pkg.version;
+if (pkg.version !== version) {
+  console.error(`package.json version ${pkg.version} does not match VERSION ${version}`);
+  process.exit(1);
+}
 
 const refName = process.env.GITHUB_REF_NAME;
 if (refName !== undefined && refName !== "" && refName !== `v${version}`) {
-  console.error(`tag ${refName} does not match package.json version ${version}`);
+  console.error(`tag ${refName} does not match VERSION ${version}`);
   process.exit(1);
 }
 
@@ -24,6 +28,7 @@ const targets = [
 
 const distDir = path.join(root, "dist");
 fs.mkdirSync(distDir, { recursive: true });
+const ldflags = `-s -w -X main.version=${version}`;
 
 for (const { goos, goarch } of targets) {
   const exe = goos === "windows" ? "kube.exe" : "kube";
@@ -35,7 +40,7 @@ for (const { goos, goarch } of targets) {
   const outBin = path.join(bundleDir, exe);
   const build = spawnSync(
     "go",
-    ["build", "-trimpath", "-ldflags=-s -w", "-o", outBin, "./cmd/kube"],
+    ["build", "-trimpath", `-ldflags=${ldflags}`, "-o", outBin, "./cmd/kube"],
     {
       cwd: root,
       env: { ...process.env, GOOS: goos, GOARCH: goarch, CGO_ENABLED: "0" },

@@ -20,8 +20,8 @@ Workflows under `.github/workflows/` run on every PR to `main`.
 ## Local commands
 
 ```bash
-go test ./cmd/kube ./internal/kube
-go build -o bin/kube ./cmd/kube
+make test
+make build               # embeds VERSION; see docs/packaging.md
 npm ci                   # prettier + docs helpers only
 npm run docs:check
 npm run e2e:tty          # Linux/macOS, Python 3; needs bin/kube and node for fake-kubectl
@@ -32,8 +32,8 @@ KUBECONFIG=~/.kube/config npm run e2e:kind   # with kind/minikube running
 
 On push of tag `vX.Y.Z`:
 
-1. **release** workflow runs Go tests, cross-compiles static `kube` binaries (`scripts/package-release.mjs`), and attaches `kubectl-shell-*-<os>-<arch>.tar.gz` to the GitHub Release.
-2. **homebrew-tap** checks out **NadafMM/homebrew-tap**, renders `Formula/kubectl-shell.rb` from the GitHub source archive for that tag (Go build, no Node runtime), commits, and pushes when `HOMEBREW_TAP_TOKEN` is set.
+1. **release** workflow runs Go tests, then `make dist` (`scripts/packaging/package-release.mjs`), and attaches `kubectl-shell-*-<os>-<arch>.tar.gz` to the GitHub Release.
+2. **homebrew-tap** checks out **NadafMM/homebrew-tap**, renders `Formula/kubectl-shell.rb` via `scripts/packaging/render-formula.mjs` from the GitHub source archive for that tag (Go build, no Node runtime), commits, and pushes when `HOMEBREW_TAP_TOKEN` is set.
 3. **brew-smoke** runs `brew install NadafMM/tap/kubectl-shell`, `brew test kubectl-shell`, and `kube --version` on macOS when the tap job ran.
 
 Secret **HOMEBREW_TAP_TOKEN**: a PAT with **`contents: write`** on **`NadafMM/homebrew-tap`** (not the main kubectl-shell repo).

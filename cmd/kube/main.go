@@ -13,7 +13,9 @@ import (
 	"github.com/NadafMM/kubectl-shell/internal/kube"
 )
 
-const version = "0.6.0"
+// version is set at link time via -X main.version=… (see Makefile / scripts/packaging).
+// The fallback matches ./VERSION for plain `go build` / `go test`.
+var version = "0.6.0"
 
 // runOptions lets tests supply confirm answers and stdio without a real TTY.
 type runOptions struct {
