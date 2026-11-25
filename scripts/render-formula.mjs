@@ -2,19 +2,14 @@ const formulaTemplate =
   "class KubectlShell < Formula\n" +
   '  desc "kubectl shell with live Tab completion and a terminal resource view"\n' +
   '  homepage "https://github.com/NadafMM/kubectl-shell"\n' +
-  '  url "https://github.com/NadafMM/kubectl-shell/releases/download/v__VERSION__/kubectl-shell-__VERSION__.tar.gz"\n' +
+  '  url "https://github.com/NadafMM/kubectl-shell/archive/refs/tags/v__VERSION__.tar.gz"\n' +
   '  sha256 "__SHA256__"\n' +
   '  license "MIT"\n' +
   "\n" +
-  '  depends_on "node"\n' +
+  '  depends_on "go" => :build\n' +
   "\n" +
   "  def install\n" +
-  '    libexec.install "cli/kube.cjs"\n' +
-  '    (bin/"kube").write <<~SH\n' +
-  "      #!/bin/bash\n" +
-  '      exec "#{Formula["node"].opt_bin}/node" "#{libexec}/kube.cjs" "$@"\n' +
-  "    SH\n" +
-  '    chmod 0755, bin/"kube"\n' +
+  '    system "go", "build", *std_go_args(ldflags: "-s -w", output: bin/"kube"), "./cmd/kube"\n' +
   '    generate_completions_from_executable(bin/"kube", "completion", shells: [:bash, :zsh, :fish])\n' +
   "  end\n" +
   "\n" +

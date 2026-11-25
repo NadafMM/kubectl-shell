@@ -1,5 +1,4 @@
 import { spawnSync } from "node:child_process";
-import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -15,38 +14,49 @@ if (refName !== undefined && refName !== "" && refName !== `v${version}`) {
   process.exit(1);
 }
 
-const bundleName = `kubectl-shell-${version}`;
-const distDir = path.join(root, "dist");
-const tarball = path.join(distDir, `${bundleName}.tar.gz`);
-
-const stageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "kubectl-shell-release-"));
-const bundleDir = path.join(stageRoot, bundleName);
-fs.mkdirSync(bundleDir, { recursive: true });
-
-const staged = [
-  { src: path.join(root, "cli", "kube.cjs"), rel: "cli/kube.cjs" },
-  { src: path.join(root, "LICENSE"), rel: "LICENSE" },
-  { src: path.join(root, "README.md"), rel: "README.md" },
+const targets = [
+  { goos: "linux", goarch: "amd64" },
+  { goos: "linux", goarch: "arm64" },
+  { goos: "darwin", goarch: "amd64" },
+  { goos: "darwin", goarch: "arm64" },
+  { goos: "windows", goarch: "amd64" },
 ];
 
-for (const { src, rel } of staged) {
-  const dest = path.join(bundleDir, rel);
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
-  fs.copyFileSync(src, dest);
-}
-
+const distDir = path.join(root, "dist");
 fs.mkdirSync(distDir, { recursive: true });
-const tar = spawnSync("tar", ["-czf", tarball, "-C", stageRoot, bundleName], {
-  stdio: "inherit",
-});
-fs.rmSync(stageRoot, { recursive: true, force: true });
 
-if (tar.status !== 0) {
-  process.exit(tar.status ?? 1);
+for (const { goos, goarch } of targets) {
+  const exe = goos === "windows" ? "kube.exe" : "kube";
+  const stageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "kubectl-shell-release-"));
+  const bundleName = `kubectl-shell-${version}-${goos}-${goarch}`;
+  const bundleDir = path.join(stageRoot, bundleName);
+  fs.mkdirSync(bundleDir, { recursive: true });
+
+  const outBin = path.join(bundleDir, exe);
+  const build = spawnSync(
+    "go",
+    ["build", "-trimpath", "-ldflags=-s -w", "-o", outBin, "./cmd/kube"],
+    {
+      cwd: root,
+      env: { ...process.env, GOOS: goos, GOARCH: goarch, CGO_ENABLED: "0" },
+      stdio: "inherit",
+    },
+  );
+  if (build.status !== 0) {
+    fs.rmSync(stageRoot, { recursive: true, force: true });
+    process.exit(build.status ?? 1);
+  }
+
+  fs.copyFileSync(path.join(root, "LICENSE"), path.join(bundleDir, "LICENSE"));
+  fs.copyFileSync(path.join(root, "README.md"), path.join(bundleDir, "README.md"));
+
+  const tarball = path.join(distDir, `${bundleName}.tar.gz`);
+  const tar = spawnSync("tar", ["-czf", tarball, "-C", stageRoot, bundleName], {
+    stdio: "inherit",
+  });
+  fs.rmSync(stageRoot, { recursive: true, force: true });
+  if (tar.status !== 0) {
+    process.exit(tar.status ?? 1);
+  }
+  console.error(`wrote ${tarball}`);
 }
-
-const sha256 = crypto.createHash("sha256").update(fs.readFileSync(tarball)).digest("hex");
-
-const absPath = path.resolve(tarball);
-console.log(`path=${absPath}`);
-console.log(`sha256=${sha256}`);

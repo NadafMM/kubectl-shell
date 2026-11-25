@@ -13,7 +13,7 @@ import (
 	"github.com/NadafMM/kubectl-shell/internal/kube"
 )
 
-const version = "0.5.1"
+const version = "0.6.0"
 
 // runOptions lets tests supply confirm answers and stdio without a real TTY.
 type runOptions struct {

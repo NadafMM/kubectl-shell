@@ -5310,7 +5310,7 @@ function realSandbox(home = import_node_os2.default.homedir()) {
 }
 
 // cli/main.ts
-var VERSION = true ? "0.5.1" : "0.0.0-dev";
+var VERSION = true ? "0.6.0" : "0.0.0-dev";
 var HISTORY = import_node_path10.default.join(stateDir(), "history");
 var session = {
   yes: false,
