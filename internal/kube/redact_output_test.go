@@ -17,6 +17,26 @@ func TestSensitiveStdoutKind(t *testing.T) {
 	}
 }
 
+func TestSensitiveReadWarning(t *testing.T) {
+	if SensitiveReadWarning([]string{"get", "secret", "token", "-o", "yaml"}) == "" {
+		t.Fatal("expected warning")
+	}
+	if SensitiveReadWarning([]string{"get", "pods"}) != "" {
+		t.Fatal("pods should not warn")
+	}
+}
+
+func TestRedactStdoutPayloadMutating(t *testing.T) {
+	raw := "{\n  \"apiVersion\": \"v1\",\n  \"kind\": \"Secret\",\n  \"data\": {\n    \"password\": \"c2VjcmV0\"\n  }\n}\n"
+	got := RedactStdoutPayload(raw)
+	if strings.Contains(got, "c2VjcmV0") {
+		t.Fatal(got)
+	}
+	if !strings.Contains(got, "***") {
+		t.Fatal(got)
+	}
+}
+
 func TestRedactKubectlStdoutJSON(t *testing.T) {
 	out := RedactKubectlStdout(
 		[]string{"get", "secret", "token", "-o", "json"},

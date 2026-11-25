@@ -94,10 +94,7 @@ func kindCmd() string {
 }
 
 func sandboxKubectlCmd() string {
-	if v := os.Getenv("KUBE_SHELL_KUBECTL"); v != "" {
-		return v
-	}
-	return "kubectl"
+	return KubectlBin()
 }
 
 func childEnv(kubeconfig string) []string {

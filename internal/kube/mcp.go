@@ -212,8 +212,10 @@ func HandleMcpRpc(message McpRpc, cluster Cluster, version string) any {
 		return mcpToolResult(id, auth.Refuse, true)
 	}
 	code, stdout, stderr := CaptureLive(argv)
-	if SensitiveStdoutKind(argv) != "" || planned.Mutating {
+	if SensitiveStdoutKind(argv) != "" {
 		stdout = RedactKubectlStdout(argv, stdout)
+	} else if planned.Mutating {
+		stdout = RedactStdoutPayload(stdout)
 	}
 	mcpRecord(active, cluster, argv, planned.Risk, "executed", &code, started, auth.Approver)
 	text := stdout

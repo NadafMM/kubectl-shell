@@ -13,7 +13,7 @@ version:
 	@echo $(VERSION)
 
 check-version:
-	@node -e "const fs=require('fs'); const v=fs.readFileSync('VERSION','utf8').trim(); const p=JSON.parse(fs.readFileSync('package.json','utf8')).version; if (v!==p) { console.error('VERSION ('+v+') != package.json ('+p+')'); process.exit(1); }"
+	@node -e "const fs=require('fs'); const v=fs.readFileSync('VERSION','utf8').trim(); const p=JSON.parse(fs.readFileSync('package.json','utf8')).version; if (v!==p) { console.error('VERSION ('+v+') != package.json ('+p+')'); process.exit(1); } const main=fs.readFileSync('cmd/kube/main.go','utf8'); const m=main.match(/var version = \"([^\"]+)\"/); if (!m || m[1]!==v) { console.error('VERSION ('+v+') != cmd/kube/main.go fallback ('+(m&&m[1])+')'); process.exit(1); }"
 
 build: check-version
 	mkdir -p bin

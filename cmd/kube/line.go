@@ -416,6 +416,8 @@ func executeEngine(engineLine string, cluster kube.Cluster, scope *kube.ShellSco
 			writeAudit("refused-confirm", "none", nil)
 			return lineResult{output: "not run", ok: false, cluster: cluster}
 		}
+	} else if warn := kube.SensitiveReadWarning(argv); warn != "" {
+		fmt.Fprintln(host.stderr, warn)
 	}
 	approver := auth.Approver
 	dryRun := false
