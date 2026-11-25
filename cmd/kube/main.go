@@ -125,6 +125,8 @@ func run(args []string, stdout, stderr io.Writer, opts runOptions) int {
 		return auditCommand(rest[1:], stdout, stderr)
 	case "undo":
 		return undoCommand(rest[1:], host, stdout, stderr, opts)
+	case "mcp":
+		return mcpCommand(host, stdout, stderr, opts)
 	}
 
 	meta := kube.MetaOf(strings.Join(rest, " "))
@@ -148,9 +150,6 @@ func run(args []string, stdout, stderr io.Writer, opts runOptions) int {
 			return 0
 		}
 		return 1
-	case "mcp":
-		fmt.Fprintf(stderr, "the Go port has not implemented %q yet. Use the TypeScript build.\n", rest[0])
-		return 2
 	}
 
 	return runKubectl(rest, host, stdout, stderr, opts)
@@ -160,8 +159,8 @@ func helpText() string {
 	return `kube ` + version + ` (go)
 
 This binary runs kubectl through a plan when risk is high, completes words, and answers ask.
-Policy, plan-id, audit, undo, view, and sandbox apply. With no args it opens the interactive shell
-(or runs a script from stdin when there is no TTY). mcp stays in TypeScript.
+Policy, plan-id, audit, undo, view, sandbox, and mcp apply. With no args it opens the interactive shell
+(or runs a script from stdin when there is no TTY).
 
   kube                         shell. Tab fills the next word
   kube --version
@@ -171,6 +170,7 @@ Policy, plan-id, audit, undo, view, and sandbox apply. With no args it opens the
   kube view [pods|deploy|svc|nodes|ns] [-A]
   kube sandbox up|down|shell
   kube --sandbox get pods
+  kube mcp
   kube plan [--json] <kubectl args>
   kube ask [--json] <question>
   kube audit tail [-n 20]
@@ -517,6 +517,32 @@ func runKubectl(argv []string, host session, stdout, stderr io.Writer, opts runO
 	}
 	writeAudit(decision, approver, &code)
 	return code
+}
+
+func mcpCommand(host session, stdout, stderr io.Writer, opts runOptions) int {
+	probe := opts.probeLive
+	if probe == nil {
+		probe = kube.ProbeLive
+	}
+	if !probe() {
+		fmt.Fprintln(stderr, "kubectl could not reach a cluster. kube only runs against a reachable cluster.")
+		return 1
+	}
+	cluster, ok := kube.LiveCluster("kubectl")
+	if !ok {
+		fmt.Fprintln(stderr, "kubectl could not reach a cluster. kube only runs against a reachable cluster.")
+		return 1
+	}
+	stdin := opts.stdin
+	if stdin == nil {
+		stdin = os.Stdin
+	}
+	if err := kube.ServeMcp(cluster, version, stdin, stdout); err != nil {
+		fmt.Fprintln(stderr, err.Error())
+		return 1
+	}
+	_ = host
+	return 0
 }
 
 // prepareSandbox handles kube sandbox up|down|shell and --sandbox KUBECONFIG.

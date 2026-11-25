@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -381,5 +382,19 @@ func TestSandboxUsage(t *testing.T) {
 	code := run([]string{"sandbox"}, &out, &errBuf, runOptions{})
 	if code != 1 || !strings.Contains(errBuf.String(), "usage: kube sandbox") {
 		t.Fatalf("code %d err %q", code, errBuf.String())
+	}
+}
+
+func TestMcpInitializeViaCLI(t *testing.T) {
+	withFakeEnv(t)
+	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
+	frame := append([]byte("Content-Length: "+strconv.Itoa(len(body))+"\r\n\r\n"), body...)
+	var out, errBuf bytes.Buffer
+	code := run([]string{"mcp"}, &out, &errBuf, runOptions{
+		stdin:     bytes.NewReader(frame),
+		probeLive: func() bool { return true },
+	})
+	if code != 0 || !strings.Contains(out.String(), "2024-11-05") {
+		t.Fatalf("code %d out %q err %q", code, out.String(), errBuf.String())
 	}
 }
