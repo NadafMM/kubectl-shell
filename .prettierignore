@@ -1,2 +1,6 @@
 package-lock.json
 coverage/
+Makefile
+VERSION
+bin/
+dist/
