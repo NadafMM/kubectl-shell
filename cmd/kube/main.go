@@ -19,6 +19,7 @@ const version = "0.5.1"
 type runOptions struct {
 	confirm    func(prompt string) bool
 	stdinTTY   bool
+	stdin      io.Reader
 	runLive    func(args []string, options kube.RunLiveOptions) int
 	probeLive  func() bool
 	agent      *bool
@@ -57,7 +58,9 @@ func run(args []string, stdout, stderr io.Writer, opts runOptions) int {
 	}
 	rest := flags.Rest
 	stdinTTY := opts.stdinTTY
-	if opts.confirm == nil && opts.agent == nil {
+	if opts.stdin != nil {
+		stdinTTY = false
+	} else if opts.confirm == nil && opts.agent == nil {
 		fi, err := os.Stdin.Stat()
 		stdinTTY = err == nil && fi.Mode()&os.ModeCharDevice != 0
 	}
@@ -65,7 +68,11 @@ func run(args []string, stdout, stderr io.Writer, opts runOptions) int {
 	if opts.agent != nil {
 		agent = *opts.agent
 	}
-	yes := kube.AllowYes(flags.Yes, len(rest), stdinTTY)
+	if flags.Yes && !kube.AllowYes(flags.Yes, len(rest), stdinTTY) {
+		fmt.Fprintln(stderr, "`--yes` applies to one command, not the shell.")
+		return 1
+	}
+	yes := flags.Yes
 	envPolicy := ""
 	if !agent {
 		envPolicy = os.Getenv("KUBE_SHELL_POLICY")
@@ -81,8 +88,14 @@ func run(args []string, stdout, stderr io.Writer, opts runOptions) int {
 	}
 
 	if len(rest) == 0 {
-		fmt.Fprintln(stderr, "the Go port does not open the shell yet. Try `kube --help`.")
-		return 2
+		if !stdinTTY {
+			stdin := opts.stdin
+			if stdin == nil {
+				stdin = os.Stdin
+			}
+			return runScript(stdin, host, stdout, stderr, opts)
+		}
+		return startRepl(host, stdout, stderr, opts)
 	}
 
 	switch rest[0] {
@@ -118,7 +131,24 @@ func run(args []string, stdout, stderr io.Writer, opts runOptions) int {
 	switch meta {
 	case "view", "ui":
 		return viewCommand(rest[1:], host, stdout, stderr, opts)
-	case "ns", "ctx", "live", "reset", "clear", "exit", "quit", "mcp":
+	case "ns", "ctx", "live", "reset", "clear", "exit", "quit":
+		// One-shot meta commands use the same line runner as the shell.
+		cluster, ok := bootCluster(opts, stderr)
+		if !ok {
+			return 1
+		}
+		scope := &kube.ShellScope{}
+		result := runUserLine(strings.Join(rest, " "), cluster, makeLineHost(host, stdout, stderr, opts, scope))
+		if result.output != "\x1bc" {
+			writeLineResult(result, stdout, stderr)
+		} else {
+			fmt.Fprint(stdout, "\x1b[H\x1b[2J")
+		}
+		if result.ok {
+			return 0
+		}
+		return 1
+	case "mcp":
 		fmt.Fprintf(stderr, "the Go port has not implemented %q yet. Use the TypeScript build.\n", rest[0])
 		return 2
 	}
@@ -130,9 +160,10 @@ func helpText() string {
 	return `kube ` + version + ` (go)
 
 This binary runs kubectl through a plan when risk is high, completes words, and answers ask.
-Policy, plan-id, and audit apply to one-shot commands. kube view opens the resource list.
-The interactive shell still runs from the TypeScript build.
+Policy, plan-id, audit, undo, and view apply. With no args it opens the interactive shell
+(or runs a script from stdin when there is no TTY). Sandbox and mcp stay in TypeScript.
 
+  kube                         shell. Tab fills the next word
   kube --version
   kube --help
   kube get pods
@@ -143,6 +174,7 @@ The interactive shell still runs from the TypeScript build.
   kube audit tail [-n 20]
   kube undo
   kube undo list
+  kube ns <name> | kube ctx <name>
   kube completion bash|zsh|fish
   kube __complete --line <line> --cursor <n> [--json]
 
@@ -150,7 +182,7 @@ __complete fills resource names from kubectl when it answers, and keeps that
 snapshot for 12 seconds. Delete, drain, and scale-to-zero plans include a
 blast-radius report. High-risk and guarded commands ask before they run unless --yes is set.
 Reads keep the completion cache; writes clear it. Mutating named edits can be undone.
-Without a TTY, view prints a plain table.`
+Without a TTY, view prints a plain table. Inside the shell, ns and ctx change scope only.`
 }
 
 func complete(args []string, stdout io.Writer) int {
