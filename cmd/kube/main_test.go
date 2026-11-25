@@ -54,6 +54,42 @@ func TestCompleteLiveDeployment(t *testing.T) {
 	}
 }
 
+func TestPlanDelete(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("KUBE_SHELL_KUBECTL", "node")
+	t.Setenv("KUBE_SHELL_NODE_SCRIPT", filepath.Join("..", "..", "scripts", "fake-kubectl.mjs"))
+	t.Setenv("KUBE_FAKE_FIXTURE", "up")
+	t.Setenv("KUBE_FAKE_FAIL", "")
+	var out, err bytes.Buffer
+	code := run([]string{"plan", "delete", "pod", "checkout"}, &out, &err)
+	if code != 0 || !strings.Contains(out.String(), "risk high") || !strings.Contains(out.String(), "pod/checkout") {
+		t.Fatalf("code %d out %q err %q", code, out.String(), err.String())
+	}
+	out.Reset()
+	err.Reset()
+	code = run([]string{"plan", "--json", "get", "pods"}, &out, &err)
+	if code != 0 || !strings.Contains(out.String(), `"risk":"read"`) || !strings.Contains(out.String(), `"planId"`) {
+		t.Fatalf("code %d out %q err %q", code, out.String(), err.String())
+	}
+}
+
+func TestAskContext(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("KUBE_SHELL_KUBECTL", "node")
+	t.Setenv("KUBE_SHELL_NODE_SCRIPT", filepath.Join("..", "..", "scripts", "fake-kubectl.mjs"))
+	t.Setenv("KUBE_FAKE_FIXTURE", "up")
+	t.Setenv("KUBE_FAKE_FAIL", "")
+	var out, err bytes.Buffer
+	code := run([]string{"ask", "which", "cluster"}, &out, &err)
+	if code != 0 || !strings.Contains(out.String(), "minikube") {
+		t.Fatalf("code %d out %q err %q", code, out.String(), err.String())
+	}
+}
+
 func TestUnportedCommand(t *testing.T) {
 	var out, err bytes.Buffer
 	if code := run([]string{"get", "pods"}, &out, &err); code != 2 || !strings.Contains(err.String(), "not implemented") {
