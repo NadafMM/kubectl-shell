@@ -20,6 +20,16 @@ type runOptions struct {
 	stdinTTY  bool
 	runLive   func(args []string, options kube.RunLiveOptions) int
 	probeLive func() bool
+	agent     *bool
+}
+
+type session struct {
+	yes            bool
+	agent          bool
+	planID         string
+	confirmContext string
+	policy         *kube.Policy
+	stdinTTY       bool
 }
 
 func main() {
@@ -43,17 +53,30 @@ func run(args []string, stdout, stderr io.Writer, opts runOptions) int {
 		fmt.Fprintln(stderr, "the Go port has not implemented sandbox yet. Use the TypeScript build.")
 		return 2
 	}
-	if flags.Policy != "" || flags.PlanID != "" || flags.ConfirmContext != "" {
-		fmt.Fprintln(stderr, "the Go port has not implemented policy and plan-id yet. Use the TypeScript build.")
-		return 2
-	}
 	rest := flags.Rest
 	stdinTTY := opts.stdinTTY
-	if opts.confirm == nil {
+	if opts.confirm == nil && opts.agent == nil {
 		fi, err := os.Stdin.Stat()
 		stdinTTY = err == nil && fi.Mode()&os.ModeCharDevice != 0
 	}
+	agent := os.Getenv("KUBE_SHELL_AGENT") == "1"
+	if opts.agent != nil {
+		agent = *opts.agent
+	}
 	yes := kube.AllowYes(flags.Yes, len(rest), stdinTTY)
+	envPolicy := ""
+	if !agent {
+		envPolicy = os.Getenv("KUBE_SHELL_POLICY")
+	}
+	policy, errMsg := kube.ReadPolicy(kube.PolicyFile(agent, flags.Policy, envPolicy))
+	if errMsg != "" {
+		fmt.Fprintf(stderr, "kube: %s\n", errMsg)
+		return 1
+	}
+	host := session{
+		yes: yes, agent: agent, planID: flags.PlanID, confirmContext: flags.ConfirmContext,
+		policy: policy, stdinTTY: stdinTTY,
+	}
 
 	if len(rest) == 0 {
 		fmt.Fprintln(stderr, "the Go port does not open the shell yet. Try `kube --help`.")
@@ -83,23 +106,25 @@ func run(args []string, stdout, stderr io.Writer, opts runOptions) int {
 		}
 		fmt.Fprint(stdout, script)
 		return 0
+	case "audit":
+		return auditCommand(rest[1:], stdout, stderr)
 	}
 
 	meta := kube.MetaOf(strings.Join(rest, " "))
 	switch meta {
-	case "view", "ui", "ns", "ctx", "undo", "audit", "live", "reset", "clear", "exit", "quit", "mcp":
+	case "view", "ui", "ns", "ctx", "undo", "live", "reset", "clear", "exit", "quit", "mcp":
 		fmt.Fprintf(stderr, "the Go port has not implemented %q yet. Use the TypeScript build.\n", rest[0])
 		return 2
 	}
 
-	return runKubectl(rest, yes, stdout, stderr, opts)
+	return runKubectl(rest, host, stdout, stderr, opts)
 }
 
 func helpText() string {
 	return `kube ` + version + ` (go)
 
 This binary runs kubectl through a plan when risk is high, completes words, and answers ask.
-The interactive shell and view still run from the TypeScript build.
+Policy, plan-id, and audit apply to one-shot commands. The interactive shell and view still run from the TypeScript build.
 
   kube --version
   kube --help
@@ -107,12 +132,13 @@ The interactive shell and view still run from the TypeScript build.
   kube --yes delete pod <name>
   kube plan [--json] <kubectl args>
   kube ask [--json] <question>
+  kube audit tail [-n 20]
   kube completion bash|zsh|fish
   kube __complete --line <line> --cursor <n> [--json]
 
 __complete fills resource names from kubectl when it answers, and keeps that
 snapshot for 12 seconds. Delete, drain, and scale-to-zero plans include a
-blast-radius report. High-risk commands ask before they run unless --yes is set.
+blast-radius report. High-risk and guarded commands ask before they run unless --yes is set.
 Reads keep the completion cache; writes clear it.`
 }
 
@@ -307,7 +333,35 @@ func askCommand(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func runKubectl(argv []string, yes bool, stdout, stderr io.Writer, opts runOptions) int {
+func auditCommand(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] != "tail" {
+		fmt.Fprintln(stderr, "usage: kube audit tail [-n 20]")
+		return 1
+	}
+	count := 20
+	for i := 0; i < len(args); i++ {
+		if args[i] == "-n" && i+1 < len(args) {
+			n, err := strconv.Atoi(args[i+1])
+			if err == nil {
+				count = n
+			}
+		}
+	}
+	lines := kube.TailAudit(count)
+	fmt.Fprintln(stdout, strings.Join(lines, "\n"))
+	return 0
+}
+
+func containsVerb(verbs []string, verb string) bool {
+	for _, item := range verbs {
+		if item == verb {
+			return true
+		}
+	}
+	return false
+}
+
+func runKubectl(argv []string, host session, stdout, stderr io.Writer, opts runOptions) int {
 	probe := opts.probeLive
 	if probe == nil {
 		probe = kube.ProbeLive
@@ -321,9 +375,56 @@ func runKubectl(argv []string, yes bool, stdout, stderr io.Writer, opts runOptio
 		fmt.Fprintln(stderr, "cannot pass an argument that contains both quote styles")
 		return 1
 	}
+	started := time.Now()
+	auditID := kube.NewAuditId()
 	cluster := clusterFor(line)
 	plan := kube.PlanCommand(line, cluster)
-	if plan.Risk == "high" && !yes {
+	rule := kube.RuleFor(host.policy, cluster.Current)
+	actor := "human-cli"
+	if host.agent {
+		actor = "agent-cli"
+	} else if host.stdinTTY {
+		actor = "human-tty"
+	}
+	writeAudit := func(decision, approver string, exitCode *int) {
+		if !kube.AuditEnabled(host.policy) {
+			return
+		}
+		kube.AppendAudit(kube.AuditEntry{
+			ID: auditID, Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+			Actor: actor, Context: plan.Context, Namespace: plan.Namespace,
+			Argv: kube.RedactArgv(argv), Risk: plan.Risk, Decision: decision,
+			Approver: approver, ExitCode: exitCode, DurationMs: int(time.Since(started).Milliseconds()),
+		}, 0)
+	}
+	if containsVerb(rule.Deny, plan.Verb) {
+		writeAudit("denied-policy", "none", nil)
+		fmt.Fprintf(stdout, "refused: %s is denied by policy\n", plan.Verb)
+		return 1
+	}
+	if host.agent && host.policy != nil && host.policy.Agents != nil && plan.Risk == "read" && !containsVerb(host.policy.Agents.Allow, plan.Verb) {
+		writeAudit("denied-policy", "none", nil)
+		fmt.Fprintf(stdout, "refused: %s is not allowed for agents\n", plan.Verb)
+		return 1
+	}
+	needsPlan := host.agent && host.policy != nil && host.policy.Agents != nil && host.policy.Agents.WriteRequires == "approved-plan" && plan.Mutating
+	if needsPlan {
+		if host.planID == "" {
+			writeAudit("denied-policy", "none", nil)
+			fmt.Fprintln(stdout, "refused: agent writes need --plan-id from plan --json")
+			return 1
+		}
+		ok, reason := kube.ConsumePlan(host.planID, kube.PlanExpect{Context: plan.Context, Namespace: plan.Namespace, Argv: argv}, time.Now())
+		if !ok {
+			writeAudit("denied-policy", "none", nil)
+			fmt.Fprintf(stdout, "refused: %s\n", reason)
+			return 1
+		}
+	} else if rule.Confirm == "typed" && host.yes && host.confirmContext != cluster.Current {
+		writeAudit("refused-confirm", "none", nil)
+		fmt.Fprintf(stdout, "refused: pass --confirm-context %s\n", cluster.Current)
+		return 1
+	} else if (plan.Risk == "high" || (rule.Mode == "guarded" && plan.Risk == "low")) && !host.yes {
 		text := kube.FormatPlan(plan)
 		if wantsBlast(plan) {
 			if extra := kube.FormatBlast(liveBlast(plan, argv)); extra != "" {
@@ -336,18 +437,32 @@ func runKubectl(argv []string, yes bool, stdout, stderr io.Writer, opts runOptio
 			confirm = defaultConfirm(stderr)
 		}
 		if !confirm("Run it? [y/N] ") {
+			writeAudit("refused-confirm", "none", nil)
 			fmt.Fprintln(stdout, "not run")
 			return 1
 		}
+	}
+	approver := "prompt-y"
+	if needsPlan {
+		approver = "plan-id:" + host.planID
+	} else if rule.Confirm == "typed" && host.yes {
+		approver = "typed-context"
+	} else if host.yes {
+		approver = "flag-yes"
 	}
 	runner := opts.runLive
 	if runner == nil {
 		runner = kube.RunLive
 	}
 	code := runner(argv, kube.RunLiveOptions{InheritStdin: true})
-	if code == 0 {
-		return 0
+	decision := "executed"
+	for _, token := range argv {
+		if token == "--dry-run" || strings.HasPrefix(token, "--dry-run=") {
+			decision = "dry-run"
+			break
+		}
 	}
+	writeAudit(decision, approver, &code)
 	return code
 }
 

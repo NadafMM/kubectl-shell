@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -159,3 +160,39 @@ func TestDeleteWithYesRuns(t *testing.T) {
 		t.Fatalf("code %d ran=%v err %q", code, ran, err.String())
 	}
 }
+
+func TestPolicyDeniesExec(t *testing.T) {
+	withFakeEnv(t)
+	policyPath := filepath.Join(os.Getenv("HOME"), "policy.json")
+	if err := os.WriteFile(policyPath, []byte(`{"contexts":{"*":{"deny":["exec"]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errBuf bytes.Buffer
+	ran := false
+	code := run([]string{"--policy", policyPath, "exec", "pod/api", "--", "date"}, &out, &errBuf, runOptions{
+		probeLive: func() bool { return true },
+		runLive: func([]string, kube.RunLiveOptions) int {
+			ran = true
+			return 0
+		},
+	})
+	if code != 1 || ran || !strings.Contains(out.String(), "denied by policy") {
+		t.Fatalf("code %d out %q ran=%v", code, out.String(), ran)
+	}
+}
+
+func TestAuditTail(t *testing.T) {
+	withFakeEnv(t)
+	kube.AppendAudit(kube.AuditEntry{
+		ID: "1", Timestamp: "2026-11-24T00:00:00Z", Actor: "human-cli",
+		Context: "minikube", Namespace: "default", Argv: []string{"get", "pods"},
+		Risk: "read", Decision: "executed", Approver: "flag-yes", ExitCode: intPtr(0), DurationMs: 1,
+	}, 0)
+	var out, err bytes.Buffer
+	code := run([]string{"audit", "tail", "-n", "1"}, &out, &err, runOptions{})
+	if code != 0 || !strings.Contains(out.String(), "get") {
+		t.Fatalf("code %d out %q err %q", code, out.String(), err.String())
+	}
+}
+
+func intPtr(n int) *int { return &n }
