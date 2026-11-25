@@ -97,10 +97,19 @@ func TestAskContext(t *testing.T) {
 	}
 }
 
-func TestViewStillUnported(t *testing.T) {
+func TestViewPrintsPlainTable(t *testing.T) {
+	withFakeEnv(t)
 	var out, err bytes.Buffer
-	if code := run([]string{"view"}, &out, &err, runOptions{}); code != 2 || !strings.Contains(err.String(), "not implemented") {
+	code := run([]string{"view", "pods"}, &out, &err, runOptions{
+		forcePlain: true,
+		probeLive:  func() bool { return true },
+	})
+	if code != 0 {
 		t.Fatalf("code %d err %q", code, err.String())
+	}
+	if !strings.Contains(out.String(), "NAME  STATUS") && !strings.Contains(out.String(), "STATUS") {
+		// fake cluster may be empty, but the header must print
+		t.Fatalf("out %q err %q", out.String(), err.String())
 	}
 }
 
