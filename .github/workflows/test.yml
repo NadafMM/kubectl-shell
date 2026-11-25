@@ -44,3 +44,16 @@ jobs:
       - run: npm run build
       - if: matrix.bundle
         run: git diff --exit-code -- cli/kube.cjs
+
+  go:
+    name: go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - run: go test ./cmd/kube ./internal/kube
