@@ -112,6 +112,13 @@ npm run lint
 npm run e2e:tty   # Linux/macOS; requires Python 3
 ```
 
+The Go port is started beside this CLI and is not the installed `kube` yet. It completes words and prints shell scripts. kubectl execution, the shell, and `view` stay in the TypeScript build.
+
+```bash
+go test ./cmd/kube ./internal/kube
+go build -o bin/kube ./cmd/kube
+```
+
 CI overview: [docs/ci.md](docs/ci.md). The demo GIF is produced from [`docs/demo.tape`](docs/demo.tape) (VHS) against a real cluster.
 
 ## Contributing and license
