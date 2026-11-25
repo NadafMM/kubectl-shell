@@ -159,6 +159,70 @@ func kubectl(args []string, timeout time.Duration) (int, string) {
 	return 1, stdout.String()
 }
 
+// KubectlJSONResult is one kubectl -o json invocation.
+type KubectlJSONResult struct {
+	OK    bool
+	JSON  json.RawMessage
+	Error string
+}
+
+func stderrFirstLine(stderr string) string {
+	stderr = strings.ReplaceAll(stderr, "\r\n", "\n")
+	stderr = strings.ReplaceAll(stderr, "\r", "\n")
+	for _, line := range strings.Split(stderr, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if len(line) > 120 {
+			return line[:120]
+		}
+		return line
+	}
+	return ""
+}
+
+// RunJson shells out to kubectl, parses stdout as JSON, and surfaces the first
+// stderr line (trimmed to 120 chars) on failure. Does not touch the live cache.
+func RunJson(args []string, timeoutMs int) KubectlJSONResult {
+	if timeoutMs <= 0 {
+		timeoutMs = 3000
+	}
+	name := os.Getenv("KUBE_SHELL_KUBECTL")
+	if name == "" {
+		name = "kubectl"
+	}
+	argv := append([]string{}, args...)
+	if script := os.Getenv("KUBE_SHELL_NODE_SCRIPT"); script != "" {
+		argv = append([]string{script}, args...)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMs)*time.Millisecond)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, argv...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err != nil {
+		line := stderrFirstLine(stderr.String())
+		if line != "" {
+			return KubectlJSONResult{OK: false, Error: line}
+		}
+		if ctx.Err() == context.DeadlineExceeded {
+			return KubectlJSONResult{OK: false, Error: "timed out"}
+		}
+		return KubectlJSONResult{OK: false, Error: "failed"}
+	}
+	raw := stdout.Bytes()
+	var parsed any
+	if uerr := json.Unmarshal(raw, &parsed); uerr != nil {
+		return KubectlJSONResult{OK: false, Error: "invalid JSON"}
+	}
+	out := make(json.RawMessage, len(raw))
+	copy(out, raw)
+	return KubectlJSONResult{OK: true, JSON: out}
+}
+
 // ProbeLive reports whether a cluster answered recently. A fresh completion
 // snapshot on disk counts, including after this process forgot its memory copy.
 func ProbeLive() bool {
