@@ -365,7 +365,8 @@ func liveBlast(plan kube.Plan, argv []string) kube.Blast {
 func askCommand(args []string, stdout, stderr io.Writer) int {
 	asJSON, rest := stripJSON(args)
 	question := strings.Trim(strings.Join(rest, " "), `"'`)
-	advice := kube.Advise(question, clusterFor("kubectl"))
+	cluster := clusterFor("kubectl")
+	advice := kube.AskAdvice(question, cluster, nil)
 	if asJSON {
 		encoded, err := json.Marshal(advice)
 		if err != nil {
