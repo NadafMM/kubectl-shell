@@ -12,6 +12,9 @@ const required = [
   "CODE_OF_CONDUCT.md",
   "docs/security/threat-model.md",
   "docs/ci.md",
+  "docs/packaging.md",
+  "VERSION",
+  "Makefile",
 ];
 
 for (const rel of required) {

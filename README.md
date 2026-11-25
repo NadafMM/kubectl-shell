@@ -33,11 +33,11 @@ Upgrade: `brew update && brew upgrade kubectl-shell`
 ```bash
 git clone https://github.com/NadafMM/kubectl-shell.git
 cd kubectl-shell
-go build -o kube ./cmd/kube
-./kube --version
+make build
+./bin/kube --version
 ```
 
-Or: `go install github.com/NadafMM/kubectl-shell/cmd/kube@latest`
+Or: `go install github.com/NadafMM/kubectl-shell/cmd/kube@latest` (version string is the module version when installed that way).
 
 `help`, `--version`, and `completion` work without a cluster; other commands need a live API.
 
