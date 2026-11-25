@@ -4,7 +4,7 @@ Workflows under `.github/workflows/` run on every PR to `main`.
 
 | Workflow         | Purpose                                                                                                       |
 | ---------------- | ------------------------------------------------------------------------------------------------------------- |
-| **test**         | Node **22** / **24** on Ubuntu; smoke on Ubuntu 22, macOS, and Windows; bundle drift check on Ubuntu 22 only. |
+| **test**         | Node **22** / **24** on Ubuntu; smoke on Ubuntu 22, macOS, and Windows; bundle drift check on Ubuntu 22 only. Go `go test ./cmd/kube ./internal/kube` on Ubuntu (needs Node for `scripts/fake-kubectl.mjs`). |
 | **lint**         | `tsc` + ESLint                                                                                                |
 | **coverage**     | Node `--experimental-test-coverage` via `npm run coverage`                                                    |
 | **e2e-tty**      | `npm run e2e:tty` on Ubuntu and macOS (Python 3; pty scenarios)                                               |

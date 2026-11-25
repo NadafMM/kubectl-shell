@@ -61,7 +61,8 @@ The interactive shell, plan, view, and kubectl execution still run from the Type
   kube completion bash|zsh|fish
   kube __complete --line <line> --cursor <n> [--json]
 
-Live object names are not loaded yet. Completion uses the static kubectl catalog.`
+__complete fills resource names from kubectl when it answers, and keeps that
+snapshot for 12 seconds. Shell, plan, and view still run in the TypeScript CLI.`
 }
 
 func complete(args []string, stdout io.Writer) int {
@@ -96,7 +97,11 @@ func complete(args []string, stdout io.Writer) int {
 	if view.Skip {
 		return 0
 	}
-	found := kube.Complete(view.Line, view.Cursor, kube.Cluster{})
+	cluster, ok := kube.LiveCluster(view.Line)
+	if !ok {
+		cluster = kube.Cluster{}
+	}
+	found := kube.Complete(view.Line, view.Cursor, cluster)
 	var values []kube.Candidate
 	for _, item := range found.Candidates {
 		value, ok := kube.CompletionValue(item.Value)
