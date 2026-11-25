@@ -54,6 +54,15 @@ func writeRequires(policy *Policy) string {
 	return policy.Agents.WriteRequires
 }
 
+// effectiveAllow is the verb list enforced for agents/MCP. MCP falls back to
+// get/describe/logs/plan when agents.allow is empty or missing.
+func effectiveAllow(policy *Policy, mcp bool) []string {
+	if mcp {
+		return mcpAllow(policy)
+	}
+	return agentAllow(policy)
+}
+
 // Authorize applies deny / agent allow / plan / typed-confirm / risk rules once.
 // When RequireConfirm is true the caller must prompt; plan consumption happens here when NeedsPlan.
 func Authorize(req AuthRequest, nowConsume func(planID string, expect PlanExpect) (bool, string)) AuthResult {
@@ -70,7 +79,6 @@ func Authorize(req AuthRequest, nowConsume func(planID string, expect PlanExpect
 		return result
 	}
 
-	allow := agentAllow(req.Policy)
 	requiresPlan := req.Agent && writeRequires(req.Policy) == "approved-plan" && req.Plan.Mutating
 	if req.MCP && writeRequires(req.Policy) == "approved-plan" && req.Plan.Mutating {
 		requiresPlan = true
@@ -79,24 +87,16 @@ func Authorize(req AuthRequest, nowConsume func(planID string, expect PlanExpect
 		requiresPlan = false
 	}
 
-	if req.Agent || req.MCP {
-		if req.Plan.Mutating {
-			if requiresPlan {
-				// plan path below
-			} else if allow != nil && !containsVerb(allow, req.Plan.Verb) {
-				result.Refuse = "refused: " + req.Plan.Verb + " is not allowed for agents"
-				result.AuditDecision = "denied-policy"
-				return result
-			}
-		} else if allow != nil && !containsVerb(allow, req.Plan.Verb) {
-			msg := "refused: " + req.Plan.Verb + " is not allowed for agents"
-			if req.MCP {
-				msg = "refused: " + req.Plan.Verb + " is not allowed"
-			}
-			result.Refuse = msg
-			result.AuditDecision = "denied-policy"
-			return result
+	allow := effectiveAllow(req.Policy, req.MCP)
+	// Allow gates every agent/MCP verb, including writes that also need a plan id.
+	if (req.Agent || req.MCP) && allow != nil && !containsVerb(allow, req.Plan.Verb) {
+		msg := "refused: " + req.Plan.Verb + " is not allowed for agents"
+		if req.MCP {
+			msg = "refused: " + req.Plan.Verb + " is not allowed"
 		}
+		result.Refuse = msg
+		result.AuditDecision = "denied-policy"
+		return result
 	}
 
 	if requiresPlan {
@@ -116,6 +116,11 @@ func Authorize(req AuthRequest, nowConsume func(planID string, expect PlanExpect
 		if !ok {
 			result.Refuse = "refused: " + reason
 			result.AuditDecision = "denied-policy"
+			return result
+		}
+		if rule.Confirm == "typed" && req.ConfirmContext != ctxName {
+			result.Refuse = "refused: pass --confirm-context " + ctxName
+			result.AuditDecision = "refused-confirm"
 			return result
 		}
 		result.OK = true
@@ -154,4 +159,12 @@ func EffectiveContext(planContext, scopeContext string) string {
 		return scopeContext
 	}
 	return planContext
+}
+
+// MatchNonTtyAgent is true when policy asks non-TTY clients to follow agent rules.
+func MatchNonTtyAgent(policy *Policy, stdinTTY bool) bool {
+	if stdinTTY || policy == nil || policy.Agents == nil {
+		return false
+	}
+	return policy.Agents.MatchNonTty
 }

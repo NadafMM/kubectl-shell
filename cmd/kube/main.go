@@ -84,6 +84,15 @@ func run(args []string, stdout, stderr io.Writer, opts runOptions) int {
 		fmt.Fprintf(stderr, "kube: %s\n", errMsg)
 		return 1
 	}
+	// match_non_tty: non-interactive clients follow agent allow / write_requires.
+	if !agent && kube.MatchNonTtyAgent(policy, stdinTTY) {
+		agent = true
+		policy, errMsg = kube.ReadPolicy(kube.PolicyFile(true, "", ""))
+		if errMsg != "" {
+			fmt.Fprintf(stderr, "kube: %s\n", errMsg)
+			return 1
+		}
+	}
 	host := session{
 		yes: yes, agent: agent, planID: flags.PlanID, confirmContext: flags.ConfirmContext,
 		policy: policy, stdinTTY: stdinTTY,
@@ -358,6 +367,20 @@ func planCommand(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err.Error())
 		return 1
 	}
+	agentPlan := os.Getenv("KUBE_SHELL_AGENT") == "1"
+	if policy, _ := kube.ReadPolicy(kube.PolicyFile(agentPlan, "", "")); kube.AuditEnabled(policy) {
+		actor := "human-cli"
+		if agentPlan {
+			actor = "agent-cli"
+		}
+		zero := 0
+		kube.AppendAudit(kube.AuditEntry{
+			ID: kube.NewAuditId(), Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+			Actor: actor, Context: plan.Context, Namespace: plan.Namespace,
+			Argv: kube.RedactArgv(argv), Risk: plan.Risk, Decision: "planned",
+			Approver: "none", ExitCode: &zero, DurationMs: 0,
+		}, 0)
+	}
 	fmt.Fprintf(stdout, "%s\n", encoded)
 	return 0
 }
@@ -481,6 +504,8 @@ func runKubectl(argv []string, host session, stdout, stderr io.Writer, opts runO
 			fmt.Fprintln(stdout, "not run")
 			return 1
 		}
+	} else if warn := kube.SensitiveReadWarning(argv); warn != "" {
+		fmt.Fprintln(stderr, warn)
 	}
 	approver := auth.Approver
 	dryRun := false

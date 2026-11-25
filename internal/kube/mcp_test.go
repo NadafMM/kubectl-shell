@@ -81,7 +81,7 @@ func TestHandleMcpExecuteRequiresPlanID(t *testing.T) {
 	t.Setenv("KUBE_SHELL_NODE_SCRIPT", filepath.Join("..", "..", "scripts", "fake-kubectl.mjs"))
 	t.Setenv("KUBE_FAKE_FIXTURE", "up")
 	_ = os.MkdirAll(filepath.Join(home, ".kube-shell"), 0o700)
-	_ = os.WriteFile(filepath.Join(home, ".kube-shell", "policy.json"), []byte(`{"agents":{"allow":["get","describe","logs","plan"],"write_requires":"approved-plan"}}`), 0o600)
+	_ = os.WriteFile(filepath.Join(home, ".kube-shell", "policy.json"), []byte(`{"agents":{"allow":["get","describe","logs","plan","delete"],"write_requires":"approved-plan"}}`), 0o600)
 	InvalidateLive()
 	t.Cleanup(InvalidateLive)
 
@@ -111,7 +111,7 @@ func TestHandleMcpPlanAndExecute(t *testing.T) {
 	logPath := filepath.Join(home, "kubectl.log")
 	t.Setenv("KUBE_FAKE_LOG", logPath)
 	_ = os.MkdirAll(filepath.Join(home, ".kube-shell"), 0o700)
-	_ = os.WriteFile(filepath.Join(home, ".kube-shell", "policy.json"), []byte(`{"agents":{"allow":["get","describe","logs","plan"],"write_requires":"approved-plan"}}`), 0o600)
+	_ = os.WriteFile(filepath.Join(home, ".kube-shell", "policy.json"), []byte(`{"agents":{"allow":["get","describe","logs","plan","delete"],"write_requires":"approved-plan"}}`), 0o600)
 	InvalidateLive()
 	t.Cleanup(InvalidateLive)
 

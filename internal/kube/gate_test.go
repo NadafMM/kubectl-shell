@@ -3,6 +3,7 @@ package kube
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -64,7 +65,7 @@ func TestAuthorizeDenyAndAgentAllow(t *testing.T) {
 }
 
 func TestAuthorizeRequiresPlanID(t *testing.T) {
-	policy, errMsg := ParsePolicy(`{"agents":{"allow":["get"],"write_requires":"approved-plan"}}`)
+	policy, errMsg := ParsePolicy(`{"agents":{"allow":["get","delete"],"write_requires":"approved-plan"}}`)
 	if errMsg != "" {
 		t.Fatal(errMsg)
 	}
@@ -74,5 +75,43 @@ func TestAuthorizeRequiresPlanID(t *testing.T) {
 	}, func(string, PlanExpect) (bool, string) { return false, "unused" })
 	if auth.OK || auth.Refuse == "" {
 		t.Fatalf("%#v", auth)
+	}
+}
+
+func TestAuthorizeAllowGatesPlanWrites(t *testing.T) {
+	policy, errMsg := ParsePolicy(`{"agents":{"allow":["get"],"write_requires":"approved-plan"}}`)
+	if errMsg != "" {
+		t.Fatal(errMsg)
+	}
+	auth := Authorize(AuthRequest{
+		Plan: Plan{Verb: "delete", Mutating: true, Risk: "high", Context: "c", Namespace: "default"},
+		Argv: []string{"delete", "pod", "x"}, Policy: &policy, Agent: true, PolicyContext: "c",
+		PlanID: "aabbccddeeff00112233445566778899",
+	}, func(string, PlanExpect) (bool, string) { return true, "" })
+	if auth.OK || !strings.Contains(auth.Refuse, "not allowed") {
+		t.Fatalf("delete outside allow should fail: %#v", auth)
+	}
+}
+
+func TestAuthorizePlanStillNeedsTypedContext(t *testing.T) {
+	policy, errMsg := ParsePolicy(`{"contexts":{"prod":{"confirm":"typed"}},"agents":{"allow":["delete"],"write_requires":"approved-plan"}}`)
+	if errMsg != "" {
+		t.Fatal(errMsg)
+	}
+	auth := Authorize(AuthRequest{
+		Plan: Plan{Verb: "delete", Mutating: true, Risk: "high", Context: "prod", Namespace: "default"},
+		Argv: []string{"delete", "pod", "x"}, Policy: &policy, Agent: true, PolicyContext: "prod",
+		PlanID: "aabbccddeeff00112233445566778899", Yes: true,
+	}, func(string, PlanExpect) (bool, string) { return true, "" })
+	if auth.OK || !strings.Contains(auth.Refuse, "confirm-context") {
+		t.Fatalf("typed confirm should still apply: %#v", auth)
+	}
+	auth = Authorize(AuthRequest{
+		Plan: Plan{Verb: "delete", Mutating: true, Risk: "high", Context: "prod", Namespace: "default"},
+		Argv: []string{"delete", "pod", "x"}, Policy: &policy, Agent: true, PolicyContext: "prod",
+		PlanID: "aabbccddeeff00112233445566778899", Yes: true, ConfirmContext: "prod",
+	}, func(string, PlanExpect) (bool, string) { return true, "" })
+	if !auth.OK {
+		t.Fatal(auth.Refuse)
 	}
 }

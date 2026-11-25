@@ -61,11 +61,11 @@ High-risk verbs prompt **`y`** on a TTY (unless `--yes`): `delete`, `drain`, `co
 
 `plan delete`, `plan drain`, and `plan scale --replicas=0` — and the interactive confirmation for those commands — look up matching objects with read-only `kubectl get -o json` calls. They flag Services that would lose Ready pods and PodDisruptionBudgets that allow 0 disruptions. `delete -f` reads local YAML or JSON only. `kube --yes` skips that lookup. A delete also tries `kubectl delete --dry-run=server` and still prints the object list if the API denies it.
 
-A policy file at `~/.kube-shell/policy.json` can mark a context `guarded` or `confirm: typed`, and can deny verbs. Inside the shell, `ctx` and `ns` change context and namespace for that shell only. Agents (`KUBE_SHELL_AGENT=1`) that require an approved plan use `kube plan --json`, then `kube --yes --plan-id <id>`. That id works once.
+A policy file at `~/.kube-shell/policy.json` can mark a context `guarded` or `confirm: typed`, and can deny verbs. `agents.allow` lists every verb an agent or MCP client may run (reads and writes). With `write_requires: approved-plan`, mutating verbs also need a single-use `--plan-id` from `kube plan --json` (and `--confirm-context` when the context is `confirm: typed`). `match_non_tty: true` applies those agent rules to non-TTY clients. Inside the shell, `ctx` and `ns` change context and namespace for that shell only.
 
-`kube audit tail` prints recent redacted records from `~/.kube-shell/audit.jsonl`. `KUBE_SHELL_AUDIT=0` turns that file off unless the policy says `audit: required`.
+`kube audit tail` prints recent redacted records from `~/.kube-shell/audit.jsonl`. `plan --json` and MCP `kube_plan` are audited as `planned`. `KUBE_SHELL_AUDIT=0` turns that file off unless the policy says `audit: required`.
 
-`kube mcp` speaks JSON-RPC on stdin for `kube_context`, `kube_plan`, and `kube_execute`. It reads only `~/.kube-shell/policy.json`. Secret and ConfigMap output is redacted in those responses. A delete needs a plan id from `kube_plan`.
+Secret, ConfigMap, and raw kubeconfig reads print a short warning on stderr. `kube mcp` speaks JSON-RPC on stdin for `kube_context`, `kube_plan`, and `kube_execute`. It reads only `~/.kube-shell/policy.json`. Secret/ConfigMap-shaped output is redacted in MCP responses (including mutating commands). A write needs the verb in `agents.allow` and, when `write_requires` is `approved-plan`, a plan id from `kube_plan`.
 
 `kube undo` restores the previous saved object for a named `set`, `apply`, `patch`, `scale`, `label`, or `annotate`. It asks before it writes. Secrets, ConfigMaps, and Pods are refused.
 

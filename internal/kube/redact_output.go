@@ -125,12 +125,36 @@ func RedactKubectlStdout(args []string, stdout string) string {
 	if SensitiveStdoutKind(args) == "" {
 		return stdout
 	}
+	return redactStdoutPayload(stdout)
+}
+
+// RedactStdoutPayload masks sensitive fields in JSON/YAML kubectl output without
+// requiring the argv to look like a Secret/ConfigMap read (used for MCP writes).
+func RedactStdoutPayload(stdout string) string {
+	return redactStdoutPayload(stdout)
+}
+
+func redactStdoutPayload(stdout string) string {
 	trimmed := strings.TrimSpace(stdout)
 	if strings.HasPrefix(trimmed, "{") {
 		return redactJSON(stdout)
 	}
-	if strings.Contains(trimmed, "apiVersion:") || strings.Contains(trimmed, "data:") || strings.Contains(trimmed, "clusters:") {
+	if strings.Contains(trimmed, "apiVersion:") || strings.Contains(trimmed, "data:") || strings.Contains(trimmed, "clusters:") || strings.Contains(trimmed, "stringData:") {
 		return redactYAML(stdout)
 	}
 	return stdout
+}
+
+// SensitiveReadWarning is a short stderr callout for Secret/ConfigMap/kubeconfig reads.
+func SensitiveReadWarning(tokens []string) string {
+	switch SensitiveStdoutKind(tokens) {
+	case "secret":
+		return "kube: warning: this command may print Secret data on stdout"
+	case "configmap":
+		return "kube: warning: this command may print ConfigMap data on stdout"
+	case "kubeconfig":
+		return "kube: warning: this command may print kubeconfig credentials on stdout"
+	default:
+		return ""
+	}
 }

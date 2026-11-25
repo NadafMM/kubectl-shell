@@ -136,10 +136,7 @@ func writePrivate(file, data string) error {
 }
 
 func kubectl(args []string, timeout time.Duration) (int, string) {
-	name := os.Getenv("KUBE_SHELL_KUBECTL")
-	if name == "" {
-		name = "kubectl"
-	}
+	name := KubectlBin()
 	argv := append([]string{}, args...)
 	if script := os.Getenv("KUBE_SHELL_NODE_SCRIPT"); script != "" {
 		argv = append([]string{script}, args...)
@@ -189,10 +186,7 @@ func RunJson(args []string, timeoutMs int) KubectlJSONResult {
 	if timeoutMs <= 0 {
 		timeoutMs = 3000
 	}
-	name := os.Getenv("KUBE_SHELL_KUBECTL")
-	if name == "" {
-		name = "kubectl"
-	}
+	name := KubectlBin()
 	argv := append([]string{}, args...)
 	if script := os.Getenv("KUBE_SHELL_NODE_SCRIPT"); script != "" {
 		argv = append([]string{script}, args...)
@@ -227,10 +221,7 @@ func RunJson(args []string, timeoutMs int) KubectlJSONResult {
 
 // CaptureLive runs kubectl with stdout and stderr collected.
 func CaptureLive(args []string) (code int, stdout, stderr string) {
-	name := os.Getenv("KUBE_SHELL_KUBECTL")
-	if name == "" {
-		name = "kubectl"
-	}
+	name := KubectlBin()
 	argv := append([]string{}, args...)
 	if script := os.Getenv("KUBE_SHELL_NODE_SCRIPT"); script != "" {
 		argv = append([]string{script}, args...)
@@ -293,10 +284,7 @@ func RunLive(args []string, options RunLiveOptions) int {
 		}
 		return code
 	}
-	name := os.Getenv("KUBE_SHELL_KUBECTL")
-	if name == "" {
-		name = "kubectl"
-	}
+	name := KubectlBin()
 	argv := append([]string{}, args...)
 	if script := os.Getenv("KUBE_SHELL_NODE_SCRIPT"); script != "" {
 		argv = append([]string{script}, args...)
