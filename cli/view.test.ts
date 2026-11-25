@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Cluster } from "../src/lib/kube/model";
 import { planCommand } from "./insight";
-import { deleteEngineLine, rowsOf, tableText, type Row } from "./view";
+import { deleteEngineLine, paintText, rowsOf, tableText, type Row } from "./view";
 import { reduce, viewState } from "./view-state";
 
 const cluster: Cluster = {
@@ -98,4 +98,29 @@ test("a filter keeps only the matching name", () => {
     rowsOf(cluster, "pod", "default", true, "check").map((row) => row.name),
     ["checkout"],
   );
+});
+
+test("NO_COLOR strips view color codes", () => {
+  const previous = process.env.NO_COLOR;
+  process.env.NO_COLOR = "1";
+  try {
+    for (const tone of ["bad", "warn", "ok", "selected", "head", "plain"] as const) {
+      assert.equal(paintText("status", tone).includes("\x1b["), false);
+    }
+  } finally {
+    if (previous === undefined) delete process.env.NO_COLOR;
+    else process.env.NO_COLOR = previous;
+  }
+});
+
+test("an empty NO_COLOR still paints status colors", () => {
+  const previous = process.env.NO_COLOR;
+  process.env.NO_COLOR = "";
+  try {
+    assert.equal(paintText("down", "bad"), "\x1b[31mdown\x1b[0m");
+    assert.equal(paintText("ok", "ok"), "\x1b[32mok\x1b[0m");
+  } finally {
+    if (previous === undefined) delete process.env.NO_COLOR;
+    else process.env.NO_COLOR = previous;
+  }
 });

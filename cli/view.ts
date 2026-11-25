@@ -146,7 +146,11 @@ function fit(text: string, width: number): string {
   return clean.padEnd(width);
 }
 
-function paint(text: string, tone: "bad" | "warn" | "ok" | "plain" | "selected" | "head"): string {
+export function paintText(
+  text: string,
+  tone: "bad" | "warn" | "ok" | "plain" | "selected" | "head",
+): string {
+  if (process.env.NO_COLOR) return text;
   if (tone === "selected") return `\x1b[7m${text}\x1b[0m`;
   if (tone === "head") return `\x1b[1m${text}\x1b[0m`;
   if (tone === "bad") return `\x1b[31m${text}\x1b[0m`;
@@ -252,7 +256,7 @@ export function openView(clusterIn: Cluster, options: ViewOptions): Cluster {
     const lines: string[] = [];
     const label = BOARDS.find((item) => item.id === board)?.label ?? board;
     lines.push(
-      paint(
+      paintText(
         fit(
           ` kube  ${cluster.current}  ${all ? "all namespaces" : ns}  ${label}  ${list.length}`,
           width,
@@ -286,7 +290,7 @@ export function openView(clusterIn: Cluster, options: ViewOptions): Cluster {
       for (let i = start; i < Math.min(names.length, start + room); i += 1) {
         const name = names[i] ?? "";
         lines.push(
-          paint(
+          paintText(
             fit(`  ${name}${name === ns ? "  current" : ""}`, width),
             i === nsCursor ? "selected" : "plain",
           ),
@@ -296,7 +300,7 @@ export function openView(clusterIn: Cluster, options: ViewOptions): Cluster {
       const showNs = all && board !== "node" && board !== "namespace";
       const nameW = Math.max(16, Math.min(36, width - (showNs ? 48 : 32)));
       lines.push(
-        paint(
+        paintText(
           fit(
             `${showNs ? fit("NAMESPACE", 16) : ""}${fit("NAME", nameW)}  ${fit("INFO", 16)}  STATUS`,
             width,
@@ -312,7 +316,7 @@ export function openView(clusterIn: Cluster, options: ViewOptions): Cluster {
       for (let i = start; i < Math.min(list.length, start + room); i += 1) {
         const row = list[i]!;
         const body = `${showNs ? fit(row.ns, 16) : ""}${fit(row.name, nameW)}  ${fit(row.info, 16)}  ${row.status}  ${row.age}`;
-        lines.push(paint(fit(body, width), i === cursor ? "selected" : toneOf(row.status)));
+        lines.push(paintText(fit(body, width), i === cursor ? "selected" : toneOf(row.status)));
       }
     }
     while (lines.length < height - 1) lines.push(fit("", width));
@@ -324,7 +328,7 @@ export function openView(clusterIn: Cluster, options: ViewOptions): Cluster {
           ? message
           : message ||
             "1 pods  2 deploy  3 svc  4 nodes  5 ns    enter describe   l logs   / filter   d delete   ? help   q quit";
-    lines.push(paint(fit(hint, width), "head"));
+    lines.push(paintText(fit(hint, width), "head"));
     state.cursor = cursor;
     state.nsCursor = nsCursor;
     process.stdout.write(`\x1b[H\x1b[2J${lines.slice(0, height).join("\n")}`);

@@ -4496,7 +4496,8 @@ function fit(text, width) {
   if (clean.length >= width) return clean.slice(0, Math.max(0, width));
   return clean.padEnd(width);
 }
-function paint(text, tone) {
+function paintText(text, tone) {
+  if (process.env.NO_COLOR) return text;
   if (tone === "selected") return `\x1B[7m${text}\x1B[0m`;
   if (tone === "head") return `\x1B[1m${text}\x1B[0m`;
   if (tone === "bad") return `\x1B[31m${text}\x1B[0m`;
@@ -4588,7 +4589,7 @@ function openView(clusterIn, options) {
     const lines = [];
     const label = BOARDS.find((item) => item.id === board)?.label ?? board;
     lines.push(
-      paint(
+      paintText(
         fit(
           ` kube  ${cluster.current}  ${all ? "all namespaces" : ns}  ${label}  ${list2.length}`,
           width
@@ -4622,7 +4623,7 @@ function openView(clusterIn, options) {
       for (let i = start; i < Math.min(names.length, start + room); i += 1) {
         const name = names[i] ?? "";
         lines.push(
-          paint(
+          paintText(
             fit(`  ${name}${name === ns ? "  current" : ""}`, width),
             i === nsCursor ? "selected" : "plain"
           )
@@ -4632,7 +4633,7 @@ function openView(clusterIn, options) {
       const showNs = all && board !== "node" && board !== "namespace";
       const nameW = Math.max(16, Math.min(36, width - (showNs ? 48 : 32)));
       lines.push(
-        paint(
+        paintText(
           fit(
             `${showNs ? fit("NAMESPACE", 16) : ""}${fit("NAME", nameW)}  ${fit("INFO", 16)}  STATUS`,
             width
@@ -4648,12 +4649,12 @@ function openView(clusterIn, options) {
       for (let i = start; i < Math.min(list2.length, start + room); i += 1) {
         const row = list2[i];
         const body = `${showNs ? fit(row.ns, 16) : ""}${fit(row.name, nameW)}  ${fit(row.info, 16)}  ${row.status}  ${row.age}`;
-        lines.push(paint(fit(body, width), i === cursor ? "selected" : toneOf(row.status)));
+        lines.push(paintText(fit(body, width), i === cursor ? "selected" : toneOf(row.status)));
       }
     }
     while (lines.length < height - 1) lines.push(fit("", width));
     const hint = commanding ? `:${command}` : filtering ? `/${filter}` : mode === "confirm" ? message : message || "1 pods  2 deploy  3 svc  4 nodes  5 ns    enter describe   l logs   / filter   d delete   ? help   q quit";
-    lines.push(paint(fit(hint, width), "head"));
+    lines.push(paintText(fit(hint, width), "head"));
     state.cursor = cursor;
     state.nsCursor = nsCursor;
     process.stdout.write(`\x1B[H\x1B[2J${lines.slice(0, height).join("\n")}`);
