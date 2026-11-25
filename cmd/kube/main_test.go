@@ -98,6 +98,39 @@ func TestAskContext(t *testing.T) {
 	}
 }
 
+func TestAskJSONReportsOOM(t *testing.T) {
+	withFakeEnv(t)
+	t.Setenv("KUBE_FAKE_DIAG", "oom")
+	var out, err bytes.Buffer
+	code := run([]string{"ask", "--json", "why is checkout crashing"}, &out, &err, runOptions{})
+	if code != 0 {
+		t.Fatalf("code %d err %q", code, err.String())
+	}
+	text := out.String()
+	if !strings.Contains(text, "OOMKilled") || !strings.Contains(text, "memory limit 64Mi") {
+		t.Fatalf("out %q", text)
+	}
+	if strings.Contains(text, "password=secret") {
+		t.Fatalf("leaked secret in %q", text)
+	}
+}
+
+func TestAskPortForwardSkipsLogs(t *testing.T) {
+	withFakeEnv(t)
+	t.Setenv("KUBE_FAKE_DIAG", "oom")
+	logPath := filepath.Join(os.Getenv("HOME"), "kubectl.log")
+	_ = os.Remove(logPath)
+	var out, err bytes.Buffer
+	code := run([]string{"ask", "how do I port-forward"}, &out, &err, runOptions{})
+	if code != 0 || !strings.Contains(out.String(), "port-forward") {
+		t.Fatalf("code %d out %q err %q", code, out.String(), err.String())
+	}
+	raw, _ := os.ReadFile(logPath)
+	if strings.Contains(string(raw), `"logs"`) {
+		t.Fatalf("unexpected logs call: %s", raw)
+	}
+}
+
 func TestViewPrintsPlainTable(t *testing.T) {
 	withFakeEnv(t)
 	var out, err bytes.Buffer

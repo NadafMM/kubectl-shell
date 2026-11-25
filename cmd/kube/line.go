@@ -176,7 +176,7 @@ func runUserLine(line string, cluster kube.Cluster, host lineHost) lineResult {
 		}
 		question = strings.ReplaceAll(question, "--json", "")
 		question = strings.Trim(strings.TrimSpace(question), `"'`)
-		advice := kube.Advise(question, cluster)
+		advice := kube.AskAdvice(question, cluster, kube.ContextArgs(scope))
 		if asJSON {
 			encoded, err := json.Marshal(advice)
 			if err != nil {

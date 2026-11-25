@@ -19,8 +19,9 @@ type Plan struct {
 }
 
 type Advice struct {
-	Why      string   `json:"why"`
-	Commands []string `json:"commands"`
+	Why      string    `json:"why"`
+	Commands []string  `json:"commands"`
+	Findings []Finding `json:"findings,omitempty"`
 }
 
 func argsOf(engineLine string) []string {
