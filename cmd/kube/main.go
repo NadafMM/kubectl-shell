@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -108,11 +109,13 @@ func run(args []string, stdout, stderr io.Writer, opts runOptions) int {
 		return 0
 	case "audit":
 		return auditCommand(rest[1:], stdout, stderr)
+	case "undo":
+		return undoCommand(rest[1:], host, stdout, stderr, opts)
 	}
 
 	meta := kube.MetaOf(strings.Join(rest, " "))
 	switch meta {
-	case "view", "ui", "ns", "ctx", "undo", "live", "reset", "clear", "exit", "quit", "mcp":
+	case "view", "ui", "ns", "ctx", "live", "reset", "clear", "exit", "quit", "mcp":
 		fmt.Fprintf(stderr, "the Go port has not implemented %q yet. Use the TypeScript build.\n", rest[0])
 		return 2
 	}
@@ -133,13 +136,15 @@ Policy, plan-id, and audit apply to one-shot commands. The interactive shell and
   kube plan [--json] <kubectl args>
   kube ask [--json] <question>
   kube audit tail [-n 20]
+  kube undo
+  kube undo list
   kube completion bash|zsh|fish
   kube __complete --line <line> --cursor <n> [--json]
 
 __complete fills resource names from kubectl when it answers, and keeps that
 snapshot for 12 seconds. Delete, drain, and scale-to-zero plans include a
 blast-radius report. High-risk and guarded commands ask before they run unless --yes is set.
-Reads keep the completion cache; writes clear it.`
+Reads keep the completion cache; writes clear it. Mutating named edits can be undone.`
 }
 
 func complete(args []string, stdout io.Writer) int {
@@ -450,20 +455,90 @@ func runKubectl(argv []string, host session, stdout, stderr io.Writer, opts runO
 	} else if host.yes {
 		approver = "flag-yes"
 	}
+	dryRun := false
+	for _, token := range argv {
+		if token == "--dry-run" || strings.HasPrefix(token, "--dry-run=") {
+			dryRun = true
+			break
+		}
+	}
+	if !dryRun {
+		kube.RememberUndo(argv, cluster, auditID, time.Now())
+	}
 	runner := opts.runLive
 	if runner == nil {
 		runner = kube.RunLive
 	}
 	code := runner(argv, kube.RunLiveOptions{InheritStdin: true})
 	decision := "executed"
-	for _, token := range argv {
-		if token == "--dry-run" || strings.HasPrefix(token, "--dry-run=") {
-			decision = "dry-run"
-			break
-		}
+	if dryRun {
+		decision = "dry-run"
 	}
 	writeAudit(decision, approver, &code)
 	return code
+}
+
+func undoCommand(args []string, host session, stdout, stderr io.Writer, opts runOptions) int {
+	if len(args) > 0 && args[0] == "list" {
+		lines := make([]string, 0)
+		for _, record := range kube.ListUndo(time.Now()) {
+			state := "restorable"
+			if record.Refused != "" {
+				state = "not restorable"
+			}
+			lines = append(lines, fmt.Sprintf("%s  %s/%s  %s  %s", record.ID, record.Kind, record.Name, record.Namespace, state))
+		}
+		if len(lines) == 0 {
+			fmt.Fprintln(stdout, "nothing to undo")
+			return 0
+		}
+		fmt.Fprintln(stdout, strings.Join(lines, "\n"))
+		return 0
+	}
+	if len(args) > 0 {
+		fmt.Fprintln(stderr, "usage: kube undo | kube undo list")
+		return 1
+	}
+	record, ok := kube.LatestUndo(time.Now())
+	if !ok {
+		fmt.Fprintln(stdout, "nothing to undo")
+		return 1
+	}
+	if refusal := kube.UndoRefusal(record); refusal != "" {
+		fmt.Fprintln(stdout, refusal)
+		return 1
+	}
+	preview := "apply saved " + record.Kind + "/" + record.Name
+	if record.Revision != "" {
+		preview = "rollout undo " + record.Kind + "/" + record.Name + " --to-revision=" + record.Revision
+	}
+	if !host.yes {
+		confirm := opts.confirm
+		if confirm == nil {
+			confirm = defaultConfirm(stderr)
+		}
+		if !confirm("Undo " + preview + "? [y/N] ") {
+			fmt.Fprintln(stdout, "not run")
+			return 1
+		}
+	}
+	runner := opts.runLive
+	if runner == nil {
+		runner = kube.RunLive
+	}
+	restore := kube.RestoreArgs(record)
+	options := kube.RunLiveOptions{InheritStdin: true}
+	if len(restore) >= 2 && restore[0] == "apply" && record.Snapshot != nil {
+		options.StdinReader = bytes.NewReader(record.Snapshot)
+		options.InheritStdin = false
+	}
+	code := runner(restore, options)
+	if code == 0 {
+		fmt.Fprintf(stdout, "restored %s/%s\n", record.Kind, record.Name)
+		return 0
+	}
+	fmt.Fprintln(stdout, "undo failed")
+	return 1
 }
 
 func defaultConfirm(stderr io.Writer) func(string) bool {

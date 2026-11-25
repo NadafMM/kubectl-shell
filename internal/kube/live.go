@@ -254,6 +254,7 @@ func CaptureLive(args []string) (code int, stdout, stderr string) {
 type RunLiveOptions struct {
 	InheritStdin bool
 	Stdin        *os.File
+	StdinReader  io.Reader
 	Stdout       *os.File
 	Stderr       *os.File
 }
@@ -282,12 +283,17 @@ func RunLive(args []string, options RunLiveOptions) int {
 	if stderr == nil {
 		stderr = os.Stderr
 	}
-	if options.InheritStdin {
+	switch {
+	case options.StdinReader != nil:
+		cmd.Stdin = options.StdinReader
+	case options.InheritStdin:
 		cmd.Stdin = stdin
-	} else if fi, err := stdin.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
-		cmd.Stdin = stdin
-	} else {
-		cmd.Stdin = nil
+	default:
+		if fi, err := stdin.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
+			cmd.Stdin = stdin
+		} else {
+			cmd.Stdin = nil
+		}
 	}
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr

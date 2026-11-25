@@ -112,7 +112,7 @@ npm run lint
 npm run e2e:tty   # Linux/macOS; requires Python 3
 ```
 
-The Go port is started beside this CLI and is not the installed `kube` yet. It completes words, prints shell scripts, answers `plan` and `ask`, and runs kubectl for one-shot commands. Policy, `--plan-id`, and audit apply to those commands. High-risk and guarded verbs ask before they run unless `--yes` is set. Reads keep the completion cache; writes clear it. Delete, drain, and scale-to-zero plans include a blast-radius report. The interactive shell and `view` stay in the TypeScript build.
+The Go port is started beside this CLI and is not the installed `kube` yet. It completes words, prints shell scripts, answers `plan` and `ask`, and runs kubectl for one-shot commands. Policy, `--plan-id`, audit, and `undo` apply to those commands. High-risk and guarded verbs ask before they run unless `--yes` is set. Reads keep the completion cache; writes clear it. Delete, drain, and scale-to-zero plans include a blast-radius report. The interactive shell and `view` stay in the TypeScript build.
 
 ```bash
 go test ./cmd/kube ./internal/kube
