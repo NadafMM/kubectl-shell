@@ -1,21 +1,19 @@
 package kube
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
-	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
 
 const mcpProtocolVersion = "2024-11-05"
 
-var (
-	mcpDefaultAllow     = []string{"get", "describe", "logs", "plan"}
-	regexpContentLength = regexp.MustCompile(`(?i)Content-Length:\s*(\d+)`)
-)
+var mcpDefaultAllow = []string{"get", "describe", "logs", "plan"}
 
 // McpRpc is one JSON-RPC request on the MCP stream.
 type McpRpc struct {
@@ -80,6 +78,48 @@ func mcpAllow(policy *Policy) []string {
 	return append([]string{}, mcpDefaultAllow...)
 }
 
+func mcpTools() []map[string]any {
+	emptyObject := map[string]any{
+		"type":       "object",
+		"properties": map[string]any{},
+	}
+	commandProp := map[string]any{
+		"type":        "string",
+		"description": "kubectl-style command without the kube prefix",
+	}
+	return []map[string]any{
+		{
+			"name":        "kube_context",
+			"description": "Current context, namespace, and policy summary",
+			"inputSchema": emptyObject,
+		},
+		{
+			"name":        "kube_plan",
+			"description": "Plan a command and mint a single-use plan id",
+			"inputSchema": map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"command": commandProp},
+				"required":   []string{"command"},
+			},
+		},
+		{
+			"name":        "kube_execute",
+			"description": "Run an allowed read, or a write with a plan id",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"command": commandProp,
+					"planId": map[string]any{
+						"type":        "string",
+						"description": "Single-use id from kube_plan for mutating commands",
+					},
+				},
+				"required": []string{"command"},
+			},
+		},
+	}
+}
+
 // HandleMcpRpc answers one MCP JSON-RPC message. Notifications (null id) return nil.
 func HandleMcpRpc(message McpRpc, cluster Cluster, version string) any {
 	if message.ID == nil {
@@ -97,17 +137,13 @@ func HandleMcpRpc(message McpRpc, cluster Cluster, version string) any {
 				"serverInfo":      map[string]any{"name": "kube", "version": version},
 			},
 		}
+	case "ping":
+		return map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{}}
 	case "tools/list":
 		return map[string]any{
 			"jsonrpc": "2.0",
 			"id":      id,
-			"result": map[string]any{
-				"tools": []map[string]string{
-					{"name": "kube_context", "description": "Current context, namespace, and policy summary"},
-					{"name": "kube_plan", "description": "Plan a command and mint a single-use plan id"},
-					{"name": "kube_execute", "description": "Run an allowed read, or a write with a plan id"},
-				},
-			},
+			"result":  map[string]any{"tools": mcpTools()},
 		}
 	case "tools/call":
 	default:
@@ -187,34 +223,57 @@ func HandleMcpRpc(message McpRpc, cluster Cluster, version string) any {
 	return mcpToolResult(id, text, code != 0)
 }
 
-// ServeMcp reads Content-Length framed JSON-RPC from in and writes framed replies to out.
-func ServeMcp(cluster Cluster, version string, in io.Reader, out io.Writer) error {
-	raw, err := io.ReadAll(in)
-	if err != nil {
+func writeMcpFrame(out io.Writer, payload []byte) error {
+	if _, err := fmt.Fprintf(out, "Content-Length: %d\r\n\r\n", len(payload)); err != nil {
 		return err
 	}
-	offset := 0
-	for offset+4 < len(raw) {
-		rel := bytes.Index(raw[offset:], []byte("\r\n\r\n"))
-		if rel < 0 {
+	_, err := out.Write(payload)
+	return err
+}
+
+// readMcpFrame reads one Content-Length framed JSON-RPC message from r.
+func readMcpFrame(r *bufio.Reader) ([]byte, error) {
+	var length int
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+		trimmed := strings.TrimRight(line, "\r\n")
+		if trimmed == "" {
 			break
 		}
-		headerEnd := offset + rel
-		header := string(raw[offset:headerEnd])
-		match := regexpContentLength.FindStringSubmatch(header)
-		if match == nil {
-			break
+		lower := strings.ToLower(trimmed)
+		if strings.HasPrefix(lower, "content-length:") {
+			n, err := strconv.Atoi(strings.TrimSpace(trimmed[len("Content-Length:"):]))
+			if err != nil || n < 0 {
+				return nil, fmt.Errorf("invalid Content-Length")
+			}
+			length = n
 		}
-		var length int
-		if _, err := fmt.Sscanf(match[1], "%d", &length); err != nil {
-			break
+	}
+	if length == 0 {
+		return nil, fmt.Errorf("missing Content-Length")
+	}
+	body := make([]byte, length)
+	if _, err := io.ReadFull(r, body); err != nil {
+		return nil, err
+	}
+	return body, nil
+}
+
+// ServeMcp streams Content-Length framed JSON-RPC from in until EOF.
+// It answers initialize before tools/list so a live MCP client can proceed.
+func ServeMcp(cluster Cluster, version string, in io.Reader, out io.Writer) error {
+	reader := bufio.NewReader(in)
+	for {
+		body, err := readMcpFrame(reader)
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			return nil
 		}
-		start := headerEnd + 4
-		if start+length > len(raw) {
-			break
+		if err != nil {
+			return err
 		}
-		body := raw[start : start+length]
-		offset = start + length
 		var message McpRpc
 		if err := json.Unmarshal(body, &message); err != nil {
 			continue
@@ -227,12 +286,18 @@ func ServeMcp(cluster Cluster, version string, in io.Reader, out io.Writer) erro
 		if err != nil {
 			continue
 		}
-		if _, err := fmt.Fprintf(out, "Content-Length: %d\r\n\r\n", len(payload)); err != nil {
-			return err
-		}
-		if _, err := out.Write(payload); err != nil {
+		if err := writeMcpFrame(out, payload); err != nil {
 			return err
 		}
 	}
-	return nil
+}
+
+// FrameMcpMessages is a test helper that builds a multi-message MCP stream.
+func FrameMcpMessages(messages ...any) []byte {
+	var buf bytes.Buffer
+	for _, message := range messages {
+		payload, _ := json.Marshal(message)
+		_ = writeMcpFrame(&buf, payload)
+	}
+	return buf.Bytes()
 }
