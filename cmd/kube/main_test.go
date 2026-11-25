@@ -322,3 +322,64 @@ func TestOneShotNs(t *testing.T) {
 		t.Fatalf("code %d out %q err %q", code, out.String(), errBuf.String())
 	}
 }
+
+func TestSandboxUpDown(t *testing.T) {
+	withFakeEnv(t)
+	home := os.Getenv("HOME")
+	userConfig := filepath.Join(home, ".kube", "config")
+	_ = os.MkdirAll(filepath.Dir(userConfig), 0o755)
+	_ = os.WriteFile(userConfig, []byte("original-kubeconfig"), 0o600)
+	var calls []kube.SandboxCommand
+	host := &kube.SandboxHost{
+		Home: home,
+		Has:  func(string) bool { return true },
+		Run: func(command kube.SandboxCommand) kube.SandboxResult {
+			calls = append(calls, command)
+			if len(command.Args) > 0 && command.Args[0] == "create" {
+				_ = os.MkdirAll(filepath.Dir(kube.SandboxKubeconfig(home)), 0o700)
+				_ = os.WriteFile(kube.SandboxKubeconfig(home), []byte("kind-config"), 0o600)
+			}
+			return kube.SandboxResult{Code: 0}
+		},
+	}
+	var out, errBuf bytes.Buffer
+	code := run([]string{"sandbox", "up"}, &out, &errBuf, runOptions{sandboxHost: host})
+	if code != 0 || !strings.Contains(out.String(), "kube-shell-sandbox is up") {
+		t.Fatalf("code %d out %q err %q", code, out.String(), errBuf.String())
+	}
+	raw, _ := os.ReadFile(userConfig)
+	if string(raw) != "original-kubeconfig" {
+		t.Fatal(string(raw))
+	}
+	if len(calls) < 2 || calls[0].Args[0] != "create" {
+		t.Fatal(calls)
+	}
+	out.Reset()
+	errBuf.Reset()
+	code = run([]string{"sandbox", "down"}, &out, &errBuf, runOptions{sandboxHost: host})
+	if code != 0 || !strings.Contains(out.String(), "is down") {
+		t.Fatalf("code %d out %q err %q", code, out.String(), errBuf.String())
+	}
+	if _, err := os.Stat(kube.SandboxKubeconfig(home)); !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+}
+
+func TestSandboxFlagRequiresUp(t *testing.T) {
+	withFakeEnv(t)
+	var out, errBuf bytes.Buffer
+	code := run([]string{"--sandbox", "get", "pods"}, &out, &errBuf, runOptions{
+		sandboxHost: &kube.SandboxHost{Home: os.Getenv("HOME"), Has: func(string) bool { return true }, Run: func(kube.SandboxCommand) kube.SandboxResult { return kube.SandboxResult{} }},
+	})
+	if code != 1 || !strings.Contains(errBuf.String(), "kube sandbox is not up") {
+		t.Fatalf("code %d err %q", code, errBuf.String())
+	}
+}
+
+func TestSandboxUsage(t *testing.T) {
+	var out, errBuf bytes.Buffer
+	code := run([]string{"sandbox"}, &out, &errBuf, runOptions{})
+	if code != 1 || !strings.Contains(errBuf.String(), "usage: kube sandbox") {
+		t.Fatalf("code %d err %q", code, errBuf.String())
+	}
+}
