@@ -19,14 +19,12 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-go@v5
         with:
-          node-version: 22
-          cache: npm
+          go-version-file: go.mod
       - uses: helm/kind-action@v1
         with:
           cluster_name: kube-shell-ci
-      - run: npm ci
-      - run: npm run build
+      - run: go build -o bin/kube ./cmd/kube
       - run: kubectl cluster-info
-      - run: npm run e2e:kind
+      - run: node scripts/e2e-kind.mjs

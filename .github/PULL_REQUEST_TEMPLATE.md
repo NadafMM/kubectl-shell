@@ -4,10 +4,9 @@
 
 ## Test plan
 
-- [ ] `npm test`
-- [ ] `npm run typecheck`
-- [ ] `npm run lint`
-- [ ] `npm run build` and no drift in `cli/kube.cjs` (if CLI source changed)
+- [ ] `go test ./cmd/kube ./internal/kube`
+- [ ] `npx prettier --check .` (if docs or scripts changed)
+- [ ] `go build -o bin/kube ./cmd/kube` and relevant e2e when behavior changes
 
 ## Notes
 

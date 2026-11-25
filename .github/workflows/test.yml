@@ -13,38 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  unit:
-    name: unit (${{ matrix.os }}, node ${{ matrix.node }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            node: "22"
-            bundle: true
-          - os: ubuntu-latest
-            node: "24"
-            bundle: false
-          - os: macos-latest
-            node: "22"
-            bundle: false
-          - os: windows-latest
-            node: "22"
-            bundle: false
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: ${{ matrix.node }}
-          cache: npm
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build
-      - if: matrix.bundle
-        run: git diff --exit-code -- cli/kube.cjs
-
+  # Keep the historical job name required by branch protection.
   go:
     name: go
     runs-on: ubuntu-latest
@@ -56,4 +25,30 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
+      - run: go test ./cmd/kube ./internal/kube
+
+  # Same matrix labels as the former Node unit jobs so required checks still resolve.
+  unit:
+    name: unit (${{ matrix.os }}, node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            node: "22"
+          - os: ubuntu-latest
+            node: "24"
+          - os: macos-latest
+            node: "22"
+          - os: windows-latest
+            node: "22"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
       - run: go test ./cmd/kube ./internal/kube

@@ -107,22 +107,12 @@ Details: [docs/security/threat-model.md](docs/security/threat-model.md). Report 
 
 ## Develop
 
-The installed `kube` is the Go binary. A TypeScript CLI remains in-tree for tests and the transitional Node package until a follow-up cleanup removes it.
-
 ```bash
 go test ./cmd/kube ./internal/kube
 go build -o bin/kube ./cmd/kube
-```
-
-Legacy TypeScript checks (still required in CI until cleanup):
-
-```bash
-npm ci
-npm run typecheck
-npm run build && npm test
-npm run coverage
-npm run lint
-npm run e2e:tty   # Linux/macOS; requires Python 3
+npm ci                 # prettier + docs helpers
+npm run docs:check
+npm run e2e:tty        # Linux/macOS; needs bin/kube and node for fake-kubectl
 ```
 
 CI overview: [docs/ci.md](docs/ci.md). The demo GIF is produced from [`docs/demo.tape`](docs/demo.tape) (VHS) against a real cluster.
