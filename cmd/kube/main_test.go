@@ -260,3 +260,65 @@ func TestUndoRefusesSecret(t *testing.T) {
 		t.Fatalf("code %d out %q", code, out.String())
 	}
 }
+
+func TestYesAloneRefusesShell(t *testing.T) {
+	var out, err bytes.Buffer
+	agentFalse := false
+	code := run([]string{"--yes"}, &out, &err, runOptions{stdinTTY: true, agent: &agentFalse})
+	if code != 1 || !strings.Contains(err.String(), "`--yes` applies to one command") {
+		t.Fatalf("code %d err %q", code, err.String())
+	}
+}
+
+func TestShellScriptAppliesNsScope(t *testing.T) {
+	withFakeEnv(t)
+	var out, errBuf bytes.Buffer
+	var seen [][]string
+	code := run([]string{}, &out, &errBuf, runOptions{
+		stdin:     strings.NewReader("ns payments\nget pods\n"),
+		probeLive: func() bool { return true },
+		runLive: func(args []string, _ kube.RunLiveOptions) int {
+			seen = append(seen, append([]string{}, args...))
+			return 0
+		},
+	})
+	if code != 0 {
+		t.Fatalf("code %d err %q out %q", code, errBuf.String(), out.String())
+	}
+	if !strings.Contains(out.String(), "namespace payments") {
+		t.Fatalf("out %q", out.String())
+	}
+	found := false
+	for _, args := range seen {
+		joined := strings.Join(args, " ")
+		if strings.HasPrefix(joined, "get pods") && strings.Contains(joined, "-n payments") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("seen %v", seen)
+	}
+}
+
+func TestShellExit(t *testing.T) {
+	withFakeEnv(t)
+	var out, errBuf bytes.Buffer
+	code := run([]string{}, &out, &errBuf, runOptions{
+		stdin:     strings.NewReader("exit\n"),
+		probeLive: func() bool { return true },
+	})
+	if code != 0 {
+		t.Fatalf("code %d err %q", code, errBuf.String())
+	}
+}
+
+func TestOneShotNs(t *testing.T) {
+	withFakeEnv(t)
+	var out, errBuf bytes.Buffer
+	code := run([]string{"ns", "payments"}, &out, &errBuf, runOptions{
+		probeLive: func() bool { return true },
+	})
+	if code != 0 || !strings.Contains(out.String(), "namespace payments") {
+		t.Fatalf("code %d out %q err %q", code, out.String(), errBuf.String())
+	}
+}
