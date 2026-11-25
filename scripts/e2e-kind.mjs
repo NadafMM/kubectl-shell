@@ -10,7 +10,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const kube = path.join(root, "cli", "kube.cjs");
+const kube = path.join(root, "bin", "kube");
 
 /** Resolve kubeconfig before HOME is redirected to an empty temp dir for kube-shell cache. */
 function hostKubeconfig() {
@@ -23,9 +23,12 @@ function hostKubeconfig() {
 }
 
 function spawnKube(args, extraEnv = {}) {
+  if (!fs.existsSync(kube)) {
+    throw new Error(`missing ${kube}; run go build -o bin/kube ./cmd/kube`);
+  }
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "kube-e2e-"));
   const kubeconfig = hostKubeconfig();
-  return spawnSync(process.execPath, [kube, ...args], {
+  return spawnSync(kube, args, {
     cwd: root,
     encoding: "utf8",
     env: {

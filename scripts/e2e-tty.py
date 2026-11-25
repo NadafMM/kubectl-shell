@@ -3,8 +3,8 @@
 
 Usage: python3 scripts/e2e-tty.py [scenario ...]   (all scenarios when none are given)
 
-Needs only `cli/kube.cjs` (run `npm run build` first), `scripts/fake-kubectl.mjs`, and `node`
-on PATH. Standard library only; skips on Windows, which has no `pty` module.
+Needs a built `bin/kube` (`go build -o bin/kube ./cmd/kube`), `scripts/fake-kubectl.mjs`, and
+`node` on PATH for the fake kubectl. Standard library only; skips on Windows, which has no `pty` module.
 """
 
 import json
@@ -23,7 +23,7 @@ import select  # noqa: E402
 import signal  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-KUBE = os.path.join(REPO, "cli", "kube.cjs")
+KUBE = os.path.join(REPO, "bin", "kube")
 FAKE_KUBECTL = os.path.join(REPO, "scripts", "fake-kubectl.mjs")
 NODE = shutil.which("node")
 
@@ -93,7 +93,7 @@ def run(argv, steps=(), limit=8.0, probes=()):
         pid, fd = pty.fork()
         if pid == 0:
             try:
-                os.execve(NODE, ["node", KUBE, *argv], env)
+                os.execve(KUBE, [KUBE, *argv], env)
             finally:
                 os._exit(127)
         start = time.time()
@@ -251,7 +251,7 @@ def main(names):
         print("e2e-tty: node not found on PATH")
         return 1
     if not os.path.exists(KUBE):
-        print(f"e2e-tty: {KUBE} is missing; run `npm run build` first")
+        print(f"e2e-tty: {KUBE} is missing; run `go build -o bin/kube ./cmd/kube` first")
         return 1
     unknown = [name for name in names if name not in SCENARIOS]
     if unknown:

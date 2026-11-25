@@ -10,7 +10,7 @@ Thanks for helping improve **`kube`**. This project is a terminal wrapper around
 
 ## Development setup
 
-The product binary is Go (`cmd/kube`, `internal/kube`). Requirements: **Go 1.22+**, **kubectl** (for optional e2e). The TypeScript tree still runs in CI until cleanup — for those checks you also need **Node.js 22+**, **npm**, and **Python 3** for `npm run e2e:tty`.
+Requirements: **Go 1.22+**, **kubectl** (for optional e2e). Node.js is only needed for `scripts/fake-kubectl.mjs`, Prettier, and docs checks. Python 3 is needed for `npm run e2e:tty`.
 
 ```bash
 git clone https://github.com/NadafMM/kubectl-shell.git
@@ -19,21 +19,12 @@ go test ./cmd/kube ./internal/kube
 go build -o bin/kube ./cmd/kube
 ```
 
-Transitional TypeScript suite:
-
-```bash
-npm ci
-npm run typecheck
-npm run build && npm test
-git diff --exit-code -- cli/kube.cjs   # bundle must match source before you push TS changes
-```
-
 Optional:
 
 ```bash
-npm run lint
-npm run coverage
+npm ci
 npm run docs:check
+npx prettier --check .
 npm run e2e:tty          # Linux/macOS
 # With kind or minikube running:
 npm run e2e:kind
@@ -44,10 +35,10 @@ CI details: [docs/ci.md](docs/ci.md).
 ## Making changes
 
 1. **Fork** and branch from `main` (`feat/…`, `fix/…`, `docs/…`).
-2. **Prefer Go** under `cmd/kube` and `internal/kube` for product behavior. If you still touch TypeScript, edit `cli/` or `src/lib/kube/` — not hand-edit `cli/kube.cjs`; run `npm run build`.
-3. **Add or update tests** beside the code (fake kubectl; no real cluster required for unit tests).
+2. **Edit** `cmd/kube` and `internal/kube`.
+3. **Add or update tests** beside the code (tests use `scripts/fake-kubectl.mjs`; no real cluster required for unit tests).
 4. **Keep scope tight** — one logical change per PR.
-5. **Run** `go test ./cmd/kube ./internal/kube` (and the npm suite when TS files change) locally.
+5. **Run** `go test ./cmd/kube ./internal/kube` locally.
 
 ## Pull requests
 
@@ -58,17 +49,14 @@ CI details: [docs/ci.md](docs/ci.md).
 
 ## Project layout
 
-| Path             | Role                                                             |
-| ---------------- | ---------------------------------------------------------------- |
-| `cmd/kube/`      | Go CLI entry (installed `kube`)                                  |
-| `internal/kube/` | Go completion, plan/ask, view, sandbox, mcp, record              |
-| `cli/`           | Transitional TypeScript CLI (tests / Node package until cleanup) |
-| `src/lib/kube/`  | TypeScript completion/model still used by the TS CLI             |
-| `scripts/`       | Test runner, release packaging, fake kubectl, e2e helpers        |
-| `cli/kube.cjs`   | Bundled TS binary (committed; CI checks drift until cleanup)     |
+| Path             | Role                                                     |
+| ---------------- | -------------------------------------------------------- |
+| `cmd/kube/`      | Go CLI entry (installed `kube`)                          |
+| `internal/kube/` | Completion, plan/ask, view, sandbox, mcp, record, etc.   |
+| `scripts/`       | Fake kubectl, release packaging, e2e helpers, docs check |
 
 Do not restore sample/offline cluster mode.
 
-## Questions
+## License
 
-Open a [Discussion](https://github.com/NadafMM/kubectl-shell/discussions) or an issue labeled `question` if you are unsure about direction before a large change.
+Contributions are under the [MIT License](LICENSE).

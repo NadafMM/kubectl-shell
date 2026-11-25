@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
 
 	"github.com/NadafMM/kubectl-shell/internal/kube"
@@ -96,6 +97,11 @@ func startRepl(host session, stdout, stderr io.Writer, opts runOptions) int {
 	lh := makeLineHost(host, stdout, stderr, opts, scope)
 
 	fmt.Fprintf(stdout, "kube  live cluster %s. Tab completes real names. `help` lists commands.\n", kube.PromptOf(cluster))
+
+	// Ignore SIGINT so Ctrl+C during a child (logs -f) or y/N does not kill the shell.
+	// Raw mode still delivers Ctrl+C as a key to the line editor.
+	signal.Ignore(os.Interrupt)
+	defer signal.Reset(os.Interrupt)
 
 	history := kube.LoadHistory()
 	state, err := term.MakeRaw(int(os.Stdin.Fd()))
