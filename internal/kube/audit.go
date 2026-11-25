@@ -39,8 +39,38 @@ func AuditEnabled(policy *Policy) bool {
 }
 
 // RedactArgv hides secret-bearing values in argv for the audit log.
+// Tokens are redacted in place so values that contain spaces stay one element.
 func RedactArgv(argv []string) []string {
-	return strings.Split(RedactLine(strings.Join(argv, " ")), " ")
+	out := make([]string, 0, len(argv))
+	for i := 0; i < len(argv); i++ {
+		token := argv[i]
+		if pair := matchFlag(token, pairFlags); pair != "" {
+			if token == pair {
+				out = append(out, token)
+				if i+1 < len(argv) {
+					out = append(out, hidePair(argv[i+1]))
+					i++
+				}
+			} else {
+				out = append(out, pair+"="+hidePair(token[len(pair)+1:]))
+			}
+			continue
+		}
+		if valueFlag := matchFlag(token, valueFlagsRedact); valueFlag != "" {
+			if token == valueFlag {
+				out = append(out, token)
+				if i+1 < len(argv) {
+					out = append(out, "***")
+					i++
+				}
+			} else {
+				out = append(out, valueFlag+"=***")
+			}
+			continue
+		}
+		out = append(out, redactAssignment(token))
+	}
+	return out
 }
 
 // AppendAudit writes one JSONL audit row, rotating when the file grows too large.

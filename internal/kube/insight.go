@@ -67,11 +67,6 @@ func riskOf(verb, sub string, tokens []string) string {
 	if !dryRun(tokens) && (verb == "run" || verb == "expose") {
 		return "high"
 	}
-	if verb == "scale" {
-		if value, ok := FlagValue(tokens, []string{"--replicas"}); ok && value == "0" {
-			return "high"
-		}
-	}
 	if verb == "rollout" && (sub == "undo" || sub == "restart") {
 		return "high"
 	}
@@ -81,7 +76,10 @@ func riskOf(verb, sub string, tokens []string) string {
 	if verb == "config" && (sub == "delete-context" || sub == "delete-cluster" || sub == "delete-user") {
 		return "high"
 	}
-	if !dryRun(tokens) && (verb == "apply" || verb == "create" || verb == "replace" || verb == "patch") {
+	// Cluster writes prompt on a TTY unless --yes (dry-run stays low below).
+	if !dryRun(tokens) && (verb == "apply" || verb == "create" || verb == "replace" || verb == "patch" ||
+		verb == "set" || verb == "label" || verb == "annotate" || verb == "edit" ||
+		verb == "autoscale" || verb == "uncordon" || verb == "scale") {
 		return "high"
 	}
 	low := map[string]bool{
@@ -95,6 +93,7 @@ func riskOf(verb, sub string, tokens []string) string {
 	if verb == "config" && (sub == "use-context" || sub == "set-context" || sub == "set-cluster" || sub == "set") {
 		return "low"
 	}
+	// Unknown verbs (plugins, auth reconcile, …) stay read — no prompt.
 	return "read"
 }
 

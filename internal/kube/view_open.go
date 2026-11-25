@@ -141,9 +141,12 @@ func openTTY(stdin *os.File) (*os.File, func()) {
 	if stdin == nil {
 		stdin = os.Stdin
 	}
-	f, err := os.OpenFile("/dev/tty", os.O_RDONLY, 0)
+	f, err := OpenTTY()
 	if err != nil {
 		return stdin, func() {}
+	}
+	if f == os.Stdin {
+		return f, func() {}
 	}
 	return f, func() { _ = f.Close() }
 }

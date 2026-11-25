@@ -203,7 +203,8 @@ func RunJson(args []string, timeoutMs int) KubectlJSONResult {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	err := cmd.Run()
+	var err error
+	withChildInterrupt(func() { err = cmd.Run() })
 	if err != nil {
 		line := stderrFirstLine(stderr.String())
 		if line != "" {
@@ -240,7 +241,8 @@ func CaptureLive(args []string) (code int, stdout, stderr string) {
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
-	err := cmd.Run()
+	var err error
+	withChildInterrupt(func() { err = cmd.Run() })
 	if err == nil {
 		return 0, outBuf.String(), errBuf.String()
 	}
@@ -314,7 +316,8 @@ func RunLive(args []string, options RunLiveOptions) int {
 	}
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
-	err := cmd.Run()
+	var err error
+	withChildInterrupt(func() { err = cmd.Run() })
 	if InvalidatesLiveCache(args) {
 		InvalidateLive()
 	}

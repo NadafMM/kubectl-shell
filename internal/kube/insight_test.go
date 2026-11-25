@@ -22,6 +22,13 @@ func TestPlanRisks(t *testing.T) {
 		"kubectl rollout undo deployment/api",
 		"kubectl rollout restart deployment api",
 		"kubectl scale deploy api --replicas=0",
+		"kubectl scale deploy api --replicas=3",
+		"kubectl set image deployment/api nginx=nginx:1.2",
+		"kubectl label pod api env=prod",
+		"kubectl annotate pod api note=x",
+		"kubectl edit deploy api",
+		"kubectl autoscale deploy api --max=5",
+		"kubectl uncordon node-1",
 		"kubectl exec pod/api -- date",
 		"kubectl debug pod/api",
 		"kubectl cp pod:/tmp/a ./a",
@@ -50,12 +57,18 @@ func TestPlanRisks(t *testing.T) {
 	if PlanCommand("kubectl run temp --image=nginx --dry-run=client", cluster).Risk != "low" {
 		t.Fatal("dry-run run")
 	}
+	if PlanCommand("kubectl label pod api env=prod --dry-run=client", cluster).Risk != "low" {
+		t.Fatal("dry-run label")
+	}
 	read := PlanCommand("kubectl get pods", cluster)
 	if read.Risk != "read" || read.Mutating {
 		t.Fatal(read)
 	}
 	if PlanCommand("kubectl get secret token", cluster).Risk != "read" {
 		t.Fatal("get secret")
+	}
+	if PlanCommand("kubectl my-plugin foo", cluster).Risk != "read" {
+		t.Fatal("unknown verb should stay read")
 	}
 }
 

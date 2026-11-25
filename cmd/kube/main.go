@@ -197,7 +197,7 @@ Policy, plan-id, audit, undo, view, sandbox, and mcp apply. With no args it open
 
 __complete fills resource names from kubectl when it answers, and keeps that
 snapshot for 12 seconds. Delete, drain, and scale-to-zero plans include a
-blast-radius report. High-risk and guarded commands ask before they run unless --yes is set.
+blast-radius report. High-risk writes and guarded commands ask before they run unless --yes is set.
 Reads keep the completion cache; writes clear it. Mutating named edits can be undone.
 Without a TTY, view prints a plain table. Inside the shell, ns and ctx change scope only.
 record on|off (or --record) writes a redacted Markdown runbook of commands that ran.
@@ -716,12 +716,14 @@ func undoCommand(args []string, host session, stdout, stderr io.Writer, opts run
 
 func defaultConfirm(stderr io.Writer) func(string) bool {
 	return func(prompt string) bool {
-		tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+		tty, err := kube.OpenTTY()
 		if err != nil {
 			fmt.Fprintf(stderr, "\nkube: could not read the answer (%v); not running it.\n", err)
 			return false
 		}
-		defer tty.Close()
+		if tty != os.Stdin {
+			defer tty.Close()
+		}
 		return kube.ConfirmLine(tty, tty, prompt)
 	}
 }
