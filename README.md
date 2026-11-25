@@ -113,14 +113,14 @@ Details: [docs/security/threat-model.md](docs/security/threat-model.md). Report 
 ## Develop
 
 ```bash
-go test ./cmd/kube ./internal/kube
-go build -o bin/kube ./cmd/kube
+make test
+make build             # embeds VERSION; see docs/packaging.md
 npm ci                 # prettier + docs helpers
 npm run docs:check
 npm run e2e:tty        # Linux/macOS; needs bin/kube and node for fake-kubectl
 ```
 
-CI overview: [docs/ci.md](docs/ci.md). The demo GIF is produced from [`docs/demo.tape`](docs/demo.tape) (VHS) against a real cluster.
+CI overview: [docs/ci.md](docs/ci.md). Packaging: [docs/packaging.md](docs/packaging.md). The demo GIF is produced from [`docs/demo.tape`](docs/demo.tape) (VHS) against a real cluster.
 
 ## Contributing and license
 
