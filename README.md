@@ -112,7 +112,7 @@ npm run lint
 npm run e2e:tty   # Linux/macOS; requires Python 3
 ```
 
-The Go port is started beside this CLI and is not the installed `kube` yet. It completes words and prints shell scripts. `__complete` loads resource names from kubectl when it answers and reuses that snapshot for 12 seconds. kubectl execution, the shell, and `view` stay in the TypeScript build.
+The Go port is started beside this CLI and is not the installed `kube` yet. It completes words, prints shell scripts, and answers `plan` and `ask` without running the command. `__complete` loads resource names from kubectl when it answers and reuses that snapshot for 12 seconds. kubectl execution, the shell, and `view` stay in the TypeScript build.
 
 ```bash
 go test ./cmd/kube ./internal/kube
