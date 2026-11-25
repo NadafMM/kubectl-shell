@@ -41,6 +41,22 @@ fi
 end
 complete -c kube -f -a '(__kube_complete)'
 `
+	case "powershell", "pwsh":
+		return `Register-ArgumentCompleter -Native -CommandName kube -ScriptBlock {
+  param($wordToComplete, $commandAst, $cursorPosition)
+  $line = $commandAst.ToString()
+  if ($null -eq $line) { $line = '' }
+  $cursor = $cursorPosition
+  if ($null -eq $cursor) { $cursor = $line.Length }
+  $out = & kube __complete --cursor $cursor --line $line 2>$null
+  if (-not $out) { return }
+  foreach ($item in $out) {
+    if ([string]::IsNullOrWhiteSpace($item)) { continue }
+    $value = $item
+    [System.Management.Automation.CompletionResult]::new($value, $value, 'ParameterValue', $value)
+  }
+}
+`
 	default:
 		return ""
 	}

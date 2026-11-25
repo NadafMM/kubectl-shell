@@ -41,8 +41,18 @@ func TestCompletionBash(t *testing.T) {
 
 func TestCompletionUsage(t *testing.T) {
 	var out, err bytes.Buffer
-	if code := run([]string{"completion"}, &out, &err, runOptions{}); code != 1 || !strings.Contains(err.String(), "bash|zsh|fish") {
+	if code := run([]string{"completion"}, &out, &err, runOptions{}); code != 1 || !strings.Contains(err.String(), "bash|zsh|fish|powershell") {
 		t.Fatalf("code %d err %q", code, err.String())
+	}
+}
+
+func TestCompletionPowerShell(t *testing.T) {
+	var out, err bytes.Buffer
+	if code := run([]string{"completion", "powershell"}, &out, &err, runOptions{}); code != 0 || !strings.Contains(out.String(), "Register-ArgumentCompleter") {
+		t.Fatalf("code %d out %q err %q", code, out.String(), err.String())
+	}
+	if code := run([]string{"completion", "pwsh"}, &out, &err, runOptions{}); code != 0 || !strings.Contains(out.String(), "Register-ArgumentCompleter") {
+		t.Fatalf("pwsh code %d out %q", code, out.String())
 	}
 }
 

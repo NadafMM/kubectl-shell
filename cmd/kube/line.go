@@ -102,7 +102,7 @@ func runUserLine(line string, cluster kube.Cluster, host lineHost) lineResult {
 		}
 		script := kube.CompletionScript(shell)
 		if script == "" {
-			return lineResult{output: "usage: kube completion bash|zsh|fish", ok: false, cluster: cluster}
+			return lineResult{output: "usage: kube completion bash|zsh|fish|powershell", ok: false, cluster: cluster}
 		}
 		return lineResult{output: script, ok: true, cluster: cluster}
 	case "undo":

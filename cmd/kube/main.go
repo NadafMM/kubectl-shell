@@ -128,7 +128,7 @@ func run(args []string, stdout, stderr io.Writer, opts runOptions) int {
 		}
 		script := kube.CompletionScript(shell)
 		if script == "" {
-			fmt.Fprintln(stderr, "usage: kube completion bash|zsh|fish")
+			fmt.Fprintln(stderr, "usage: kube completion bash|zsh|fish|powershell")
 			return 1
 		}
 		fmt.Fprint(stdout, script)
@@ -190,7 +190,7 @@ Policy, plan-id, audit, undo, view, sandbox, and mcp apply. With no args it open
   kube undo
   kube undo list
   kube ns <name> | kube ctx <name>
-  kube completion bash|zsh|fish
+  kube completion bash|zsh|fish|powershell
   kube __complete --line <line> --cursor <n> [--json]
 
 __complete fills resource names from kubectl when it answers, and keeps that

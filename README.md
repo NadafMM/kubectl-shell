@@ -77,7 +77,7 @@ Agents: `kube plan --json …`, then `--yes` when the plan matches intent. `__co
 
 ## Shell completion
 
-`kube completion bash|zsh|fish` prints a script for that shell. One-line install examples:
+`kube completion bash|zsh|fish|powershell` prints a script for that shell. One-line install examples:
 
 ```bash
 # bash (~/.bashrc)
@@ -88,6 +88,11 @@ source <(kube completion zsh)
 
 # fish (~/.config/fish/completions/kube.fish)
 kube completion fish | source
+```
+
+```powershell
+# PowerShell profile
+kube completion powershell | Out-String | Invoke-Expression
 ```
 
 ## Configuration
