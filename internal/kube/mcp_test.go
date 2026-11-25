@@ -3,6 +3,7 @@ package kube
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -11,12 +12,11 @@ import (
 )
 
 func TestServeMcpInitialize(t *testing.T) {
-	body, _ := json.Marshal(map[string]any{
+	frame := FrameMcpMessages(map[string]any{
 		"jsonrpc": "2.0",
 		"id":      1,
 		"method":  "initialize",
 	})
-	frame := append([]byte("Content-Length: "+strconv.Itoa(len(body))+"\r\n\r\n"), body...)
 	var out bytes.Buffer
 	cluster := Cluster{Current: "minikube", Contexts: []Context{{Name: "minikube", Namespace: "default"}}}
 	if err := ServeMcp(cluster, "0.5.1", bytes.NewReader(frame), &out); err != nil {
@@ -24,6 +24,52 @@ func TestServeMcpInitialize(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), `"protocolVersion":"2024-11-05"`) {
 		t.Fatal(out.String())
+	}
+}
+
+func TestServeMcpStreamsInitializeThenToolsList(t *testing.T) {
+	pr, pw := io.Pipe()
+	var out bytes.Buffer
+	cluster := Cluster{Current: "minikube", Contexts: []Context{{Name: "minikube", Namespace: "default"}}}
+	done := make(chan error, 1)
+	go func() {
+		done <- ServeMcp(cluster, "0.6.0", pr, &out)
+	}()
+
+	write := func(message map[string]any) {
+		payload, _ := json.Marshal(message)
+		if _, err := pw.Write([]byte("Content-Length: " + strconv.Itoa(len(payload)) + "\r\n\r\n")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pw.Write(payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+	write(map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"})
+	write(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+	_ = pw.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	if !strings.Contains(text, `"protocolVersion":"2024-11-05"`) {
+		t.Fatal(text)
+	}
+	if !strings.Contains(text, `"inputSchema"`) || !strings.Contains(text, `"kube_execute"`) {
+		t.Fatal(text)
+	}
+	// Two framed responses (initialize + tools/list); notification has no reply.
+	if strings.Count(text, "Content-Length:") != 2 {
+		t.Fatal(text)
+	}
+}
+
+func TestHandleMcpToolsListHasInputSchema(t *testing.T) {
+	reply := HandleMcpRpc(McpRpc{JSONRPC: "2.0", ID: 1, Method: "tools/list"}, Cluster{}, "0.6.0")
+	raw, _ := json.Marshal(reply)
+	if !strings.Contains(string(raw), `"inputSchema"`) || !strings.Contains(string(raw), `"planId"`) {
+		t.Fatal(string(raw))
 	}
 }
 
