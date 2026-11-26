@@ -10,7 +10,7 @@ Thanks for helping improve **`kube`**. This project is a terminal wrapper around
 
 ## Development setup
 
-Requirements: **Go 1.22+**, **kubectl** (for optional e2e). Node.js is only needed for `scripts/fake-kubectl.mjs`, Prettier, and docs checks. Python 3 is needed for `npm run e2e:tty`.
+Requirements: **Go 1.26+**, **kubectl** (for optional e2e). Node.js is only needed for `scripts/fake-kubectl.mjs`, Prettier, and docs checks. Python 3 is needed for `npm run e2e:tty`.
 
 ```bash
 git clone https://github.com/NadafMM/kubectl-shell.git
