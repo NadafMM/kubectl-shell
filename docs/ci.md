@@ -2,20 +2,20 @@
 
 Workflows under `.github/workflows/` run on every PR to `main`.
 
-| Workflow         | Purpose                                                                                  |
-| ---------------- | ---------------------------------------------------------------------------------------- |
+| Workflow         | Purpose                                                                                                                 |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | **test**         | `go test ./cmd/kube ./internal/kube/...` as jobs named `go` and `unit (os, node …)` (labels kept for branch protection) |
-| **coverage**     | Required-check job; Go coverage summary for `./cmd/kube` and `./internal/kube/...` (skips types-only parent package) |
-| **lint**         | Prettier check                                                                           |
-| **e2e-tty**      | `scripts/e2e-tty.py` on Ubuntu and macOS (Python 3; pty scenarios against `bin/kube`)    |
-| **e2e-kind**     | kind + real `kubectl`; `scripts/e2e-kind.mjs` against `bin/kube`                         |
-| **e2e-minikube** | Manual (`workflow_dispatch`) only                                                        |
-| **audit**        | `npm audit --audit-level=high` on remaining Node tooling                                 |
-| **codeql**       | GitHub CodeQL for Go; uploads SARIF to code scanning                                     |
-| **docs**         | `npm run docs:check` when README/docs change                                             |
-| **semantic-pr**  | Conventional Commits PR titles                                                           |
-| **labeler**      | Auto labels from paths (`.github/labeler.yml`)                                           |
-| **release**      | Tag `v*.*.*` → Go binaries on the GitHub Release, Homebrew tap bump, brew smoke on macOS |
+| **coverage**     | Required-check job; Go coverage summary for `./cmd/kube` and `./internal/kube/...` (skips types-only parent package)    |
+| **lint**         | Prettier check                                                                                                          |
+| **e2e-tty**      | `scripts/e2e-tty.py` on Ubuntu and macOS (Python 3; pty scenarios against `bin/kube`)                                   |
+| **e2e-kind**     | kind + real `kubectl`; `scripts/e2e-kind.mjs` against `bin/kube`                                                        |
+| **e2e-minikube** | Manual (`workflow_dispatch`) only                                                                                       |
+| **audit**        | `npm audit --audit-level=high` on remaining Node tooling                                                                |
+| **codeql**       | GitHub CodeQL for Go; uploads SARIF to code scanning                                                                    |
+| **docs**         | `npm run docs:check` when README/docs change                                                                            |
+| **semantic-pr**  | Conventional Commits PR titles                                                                                          |
+| **labeler**      | Auto labels from paths (`.github/labeler.yml`)                                                                          |
+| **release**      | Tag `v*.*.*` → Go binaries on the GitHub Release, Homebrew tap bump, brew smoke on macOS                                |
 
 ## Local commands
 
