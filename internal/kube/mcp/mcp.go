@@ -6,6 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/NadafMM/kubectl-shell/internal/kube"
+	"github.com/NadafMM/kubectl-shell/internal/kube/parse"
+	kpolicy "github.com/NadafMM/kubectl-shell/internal/kube/policy"
+	"github.com/NadafMM/kubectl-shell/internal/kube/redact"
+	ksession "github.com/NadafMM/kubectl-shell/internal/kube/session"
 	"io"
 	"strconv"
 	"strings"
@@ -39,25 +43,25 @@ func mcpToolResult(id any, text string, isError bool) map[string]any {
 	}
 }
 
-func mcpPolicy() *kube.Policy {
-	policy, errMsg := kube.ReadPolicy(kube.PolicyFile(true, "", ""))
+func mcpPolicy() *kpolicy.Policy {
+	policy, errMsg := kpolicy.ReadPolicy(kpolicy.PolicyFile(true, "", ""))
 	if errMsg != "" {
 		return nil
 	}
 	return policy
 }
 
-func mcpRecord(policy *kube.Policy, cluster kube.Cluster, argv []string, risk, decision string, exitCode *int, started time.Time, approver string) {
-	if !kube.AuditEnabled(policy) {
+func mcpRecord(policy *kpolicy.Policy, cluster kube.Cluster, argv []string, risk, decision string, exitCode *int, started time.Time, approver string) {
+	if !ksession.AuditEnabled(policy) {
 		return
 	}
-	kube.AppendAudit(kube.AuditEntry{
-		ID:         kube.NewAuditId(),
+	ksession.AppendAudit(ksession.AuditEntry{
+		ID:         ksession.NewAuditId(),
 		Timestamp:  time.Now().UTC().Format(time.RFC3339),
 		Actor:      "mcp",
 		Context:    cluster.Current,
 		Namespace:  kube.NamespaceOf(cluster),
-		Argv:       kube.RedactArgv(argv),
+		Argv:       redact.RedactArgv(argv),
 		Risk:       risk,
 		Decision:   decision,
 		Approver:   approver,
@@ -67,9 +71,9 @@ func mcpRecord(policy *kube.Policy, cluster kube.Cluster, argv []string, risk, d
 }
 
 func mcpPlanned(command string, cluster kube.Cluster) (kube.Plan, []string) {
-	view := kube.ToEngine(command, len(command), "repl")
+	view := parse.ToEngine(command, len(command), "repl")
 	planned := plan.PlanCommand(view.Line, cluster)
-	argv := kube.CommandArgs(view.Line, nil)
+	argv := ksession.CommandArgs(view.Line, nil)
 	return planned, argv
 }
 
@@ -158,8 +162,8 @@ func HandleMcpRpc(message McpRpc, cluster kube.Cluster, version string) any {
 		}
 	}
 	active := mcpPolicy()
-	rule := kube.RuleFor(active, cluster.Current)
-	allow := kube.McpAllow(active)
+	rule := kpolicy.RuleFor(active, cluster.Current)
+	allow := kpolicy.McpAllow(active)
 	if name == "kube_context" {
 		payload, _ := json.Marshal(map[string]any{
 			"context":   cluster.Current,
@@ -180,7 +184,7 @@ func HandleMcpRpc(message McpRpc, cluster kube.Cluster, version string) any {
 		blast := plan.BlastRadius(planned, argv, func(kubectl []string) live.KubectlJSONResult {
 			return live.RunJson(kubectl, 3000)
 		}, func() int64 { return time.Now().UnixMilli() })
-		planID, _ := kube.MintPlan(kube.PlanExpect{Context: planned.Context, Namespace: planned.Namespace, Argv: argv}, time.Now())
+		planID, _ := kpolicy.MintPlan(kpolicy.PlanExpect{Context: planned.Context, Namespace: planned.Namespace, Argv: argv}, time.Now())
 		zero := 0
 		mcpRecord(active, cluster, argv, planned.Risk, "planned", &zero, started, "none")
 		type planPayload struct {
@@ -197,21 +201,21 @@ func HandleMcpRpc(message McpRpc, cluster kube.Cluster, version string) any {
 		return mcpToolResult(id, "unknown tool", true)
 	}
 	planID, _ := args["planId"].(string)
-	auth := kube.Authorize(kube.AuthRequest{
+	auth := kpolicy.Authorize(kpolicy.AuthRequest{
 		Plan: planned, Argv: argv, Policy: active, Agent: true, MCP: true,
 		PlanID: planID, PolicyContext: cluster.Current, Yes: true,
-	}, func(id string, expect kube.PlanExpect) (bool, string) {
-		return kube.ConsumePlan(id, expect, time.Now())
+	}, func(id string, expect kpolicy.PlanExpect) (bool, string) {
+		return kpolicy.ConsumePlan(id, expect, time.Now())
 	})
 	if !auth.OK {
 		mcpRecord(active, cluster, argv, planned.Risk, auth.AuditDecision, nil, started, "none")
 		return mcpToolResult(id, auth.Refuse, true)
 	}
 	code, stdout, stderr := live.CaptureLive(argv)
-	if kube.SensitiveStdoutKind(argv) != "" {
-		stdout = kube.RedactKubectlStdout(argv, stdout)
+	if redact.SensitiveStdoutKind(argv) != "" {
+		stdout = redact.RedactKubectlStdout(argv, stdout)
 	} else if planned.Mutating {
-		stdout = kube.RedactStdoutPayload(stdout)
+		stdout = redact.RedactStdoutPayload(stdout)
 	}
 	mcpRecord(active, cluster, argv, planned.Risk, "executed", &code, started, auth.Approver)
 	text := stdout

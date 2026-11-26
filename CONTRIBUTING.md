@@ -55,8 +55,8 @@ CI details: [docs/ci.md](docs/ci.md).
 | -------------------- | -------------------------------------------------------- |
 | `VERSION`            | Release version (must match `package.json` and git tags) |
 | `cmd/kube/`          | Go CLI entry (installed `kube`)                          |
-| `internal/kube/`     | Shared core (parse, policy, redact, session state)       |
-| `internal/kube/*/`   | Feature packages: live, plan, complete, view, mcp, …     |
+| `internal/kube/`     | Shared types, `~/.kube-shell` paths, fixtures            |
+| `internal/kube/*/`   | Implementation packages (parse, policy, live, plan, …)   |
 | `scripts/packaging/` | Cross-compile release tarballs and Homebrew formula      |
 | `scripts/`           | Fake kubectl, e2e helpers, docs check                    |
 | `Makefile`           | `build` / `test` / `install` / `dist`                    |

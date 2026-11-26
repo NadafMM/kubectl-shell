@@ -3,6 +3,9 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"github.com/NadafMM/kubectl-shell/internal/kube/parse"
+	kpolicy "github.com/NadafMM/kubectl-shell/internal/kube/policy"
+	ksession "github.com/NadafMM/kubectl-shell/internal/kube/session"
 	"io"
 	"os"
 	"strings"
@@ -30,7 +33,7 @@ func bootCluster(opts runOptions, stderr io.Writer) (kube.Cluster, bool) {
 	return cluster, true
 }
 
-func makeLineHost(host session, stdout, stderr io.Writer, opts runOptions, scope *kube.ShellScope) lineHost {
+func makeLineHost(host session, stdout, stderr io.Writer, opts runOptions, scope *ksession.ShellScope) lineHost {
 	confirm := opts.confirm
 	if confirm == nil {
 		confirm = defaultConfirm(stderr)
@@ -52,7 +55,7 @@ func runScript(stdin io.Reader, host session, stdout, stderr io.Writer, opts run
 	if !ok {
 		return 1
 	}
-	scope := &kube.ShellScope{}
+	scope := &ksession.ShellScope{}
 	lh := makeLineHost(host, stdout, stderr, opts, scope)
 	code := 0
 	scanner := bufio.NewScanner(stdin)
@@ -63,7 +66,7 @@ func runScript(stdin io.Reader, host session, stdout, stderr io.Writer, opts run
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		kube.RememberHistory(line)
+		ksession.RememberHistory(line)
 		result := runUserLine(line, cluster, lh)
 		cluster = result.cluster
 		if result.output != "\x1bc" {
@@ -79,10 +82,10 @@ func runScript(stdin io.Reader, host session, stdout, stderr io.Writer, opts run
 	return code
 }
 
-func promptString(cluster kube.Cluster, policy *kube.Policy) string {
-	guarded := kube.RuleFor(policy, cluster.Current).Mode == "guarded"
+func promptString(cluster kube.Cluster, policy *kpolicy.Policy) string {
+	guarded := kpolicy.RuleFor(policy, cluster.Current).Mode == "guarded"
 	body := kube.PromptOf(cluster) + "$ "
-	label := kube.PromptLabel(guarded, body)
+	label := kpolicy.PromptLabel(guarded, body)
 	if guarded && strings.HasPrefix(label, "[GUARDED] ") {
 		return "\x1b[31m[GUARDED]\x1b[0m" + label[len("[GUARDED]"):]
 	}
@@ -94,7 +97,7 @@ func startRepl(host session, stdout, stderr io.Writer, opts runOptions) int {
 	if !ok {
 		return 1
 	}
-	scope := &kube.ShellScope{}
+	scope := &ksession.ShellScope{}
 	lh := makeLineHost(host, stdout, stderr, opts, scope)
 
 	fmt.Fprintf(stdout, "kube  live cluster %s. Tab completes real names. `help` lists commands.\n", kube.PromptOf(cluster))
@@ -104,7 +107,7 @@ func startRepl(host session, stdout, stderr io.Writer, opts runOptions) int {
 	live.SetREPLInterruptIgnore(true)
 	defer live.SetREPLInterruptIgnore(false)
 
-	history := kube.LoadHistory()
+	history := ksession.LoadHistory()
 	state, err := term.MakeRaw(int(os.Stdin.Fd()))
 	if err != nil {
 		// Fall back to line-at-a-time when raw mode is unavailable.
@@ -129,7 +132,7 @@ func startRepl(host session, stdout, stderr io.Writer, opts runOptions) int {
 			fmt.Fprintln(stdout)
 			return 0
 		}
-		kube.RememberHistory(line)
+		ksession.RememberHistory(line)
 		// Leave raw mode while kubectl / confirms run so children see a normal TTY.
 		_ = term.Restore(int(os.Stdin.Fd()), state)
 		result := runUserLine(line, cluster, lh)
@@ -278,7 +281,7 @@ func (e *lineEditor) historyDown(prompt string) {
 func (e *lineEditor) complete(prompt string) {
 	line := string(e.buf)
 	cursor := len([]byte(string(e.buf[:e.cursor])))
-	view := kube.ToEngine(line, cursor, "repl")
+	view := parse.ToEngine(line, cursor, "repl")
 	cluster, ok := live.LiveCluster(view.Line)
 	if !ok {
 		cluster = kube.Cluster{}
@@ -294,12 +297,12 @@ func (e *lineEditor) complete(prompt string) {
 	}
 	var values []kube.Candidate
 	for _, item := range found.Candidates {
-		value, ok := kube.CompletionValue(item.Value)
+		value, ok := parse.CompletionValue(item.Value)
 		if !ok {
 			continue
 		}
 		item.Value = value
-		item.Detail = kube.PlainText(item.Detail)
+		item.Detail = parse.PlainText(item.Detail)
 		values = append(values, item)
 	}
 	if len(values) == 0 {
@@ -307,7 +310,7 @@ func (e *lineEditor) complete(prompt string) {
 		return
 	}
 	top := values[0]
-	nextLine, nextCursor := kube.SpliceToken(line, start, end, top.Value, true)
+	nextLine, nextCursor := parse.SpliceToken(line, start, end, top.Value, true)
 	if nextLine == line && nextCursor == cursor {
 		if len(values) > 1 {
 			width := 0

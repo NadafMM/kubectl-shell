@@ -28,7 +28,11 @@ make clean
 | Path                            | Role                                            |
 | ------------------------------- | ----------------------------------------------- |
 | `cmd/kube/`                     | CLI entrypoint (`kube`)                         |
-| `internal/kube/`                | Shared core (parse, policy, redact, state)      |
+| `internal/kube/`                | Shared types, state paths, fixtures             |
+| `internal/kube/parse/`          | Tokenize, grammar, catalog, completion scripts  |
+| `internal/kube/policy/`         | policy.json, Authorize, plans, confirm          |
+| `internal/kube/redact/`         | Argv / stdout secret redaction                  |
+| `internal/kube/session/`        | History, audit, runbook, shell scope            |
 | `internal/kube/live/`           | kubectl process + live completion cache         |
 | `internal/kube/plan/`           | PlanCommand, blast radius, ask/diagnose         |
 | `internal/kube/complete/`       | Word completion                                 |
@@ -40,7 +44,7 @@ make clean
 | `scripts/`                      | e2e / fake-kubectl / docs checks (not shipping) |
 | `.github/workflows/release.yml` | Tag `v*.*.*` → GitHub Release + tap bump        |
 
-Put new shared helpers in `internal/kube`. Put feature logic in the matching `internal/kube/<area>` package.
+Put shared types/state in `internal/kube`. Put implementation in the matching `internal/kube/<area>` package.
 
 ## Homebrew
 

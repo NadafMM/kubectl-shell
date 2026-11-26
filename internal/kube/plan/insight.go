@@ -2,6 +2,8 @@ package plan
 
 import (
 	"github.com/NadafMM/kubectl-shell/internal/kube"
+	"github.com/NadafMM/kubectl-shell/internal/kube/parse"
+	"github.com/NadafMM/kubectl-shell/internal/kube/redact"
 	"regexp"
 	"sort"
 	"strings"
@@ -15,8 +17,8 @@ type Advice struct {
 
 func argsOf(engineLine string) []string {
 	var tokens []string
-	for _, token := range kube.Tokenize(engineLine) {
-		tokens = append(tokens, kube.Unquote(token.Text))
+	for _, token := range parse.Tokenize(engineLine) {
+		tokens = append(tokens, parse.Unquote(token.Text))
 	}
 	if len(tokens) > 0 && (tokens[0] == "kubectl" || tokens[0] == "k") {
 		return tokens[1:]
@@ -95,7 +97,7 @@ func summaryFor(plan kube.Plan, sub string, tokens []string) string {
 	if len(plan.Targets) > 0 {
 		what = strings.Join(plan.Targets, ", ")
 	}
-	switch kube.SensitiveStdoutKind(tokens) {
+	switch redact.SensitiveStdoutKind(tokens) {
 	case "secret":
 		return "Reads " + what + " in " + where + ". kubectl may print Secret data on stdout; kube does not redact it unless KUBE_SHELL_REDACT_STDOUT=1 and stdout is not a TTY."
 	case "configmap":
@@ -140,8 +142,8 @@ func summaryFor(plan kube.Plan, sub string, tokens []string) string {
 // PlanCommand describes what a kubectl line will touch. It does not run it.
 func PlanCommand(engineLine string, cluster kube.Cluster) kube.Plan {
 	args := argsOf(engineLine)
-	scope := kube.ScopeOf(args, cluster)
-	parsed := kube.PositionalWords(args)
+	scope := parse.ScopeOf(args, cluster)
+	parsed := parse.PositionalWords(args)
 	verb, sub := "", ""
 	if len(parsed.Words) > 0 {
 		verb = parsed.Words[0]
@@ -149,7 +151,7 @@ func PlanCommand(engineLine string, cluster kube.Cluster) kube.Plan {
 	if len(parsed.Words) > 1 {
 		sub = parsed.Words[1]
 	}
-	resource, hasResource := kube.ResolveResource(sub)
+	resource, hasResource := parse.ResolveResource(sub)
 	var names []string
 	if hasResource {
 		names = parsed.Words[2:]

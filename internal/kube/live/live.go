@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/NadafMM/kubectl-shell/internal/kube"
+	"github.com/NadafMM/kubectl-shell/internal/kube/parse"
+	"github.com/NadafMM/kubectl-shell/internal/kube/redact"
 	"io"
 	"os"
 	"os/exec"
@@ -243,12 +245,12 @@ func RunLive(args []string, options RunLiveOptions) int {
 	if fi, err := stdout.Stat(); err == nil {
 		stdoutTTY = fi.Mode()&os.ModeCharDevice != 0
 	}
-	if kube.WantsRedactedStdout(args) && !stdoutTTY {
+	if redact.WantsRedactedStdout(args) && !stdoutTTY {
 		code, out, errOut := CaptureLive(args)
 		if errOut != "" {
 			_, _ = io.WriteString(stderr, errOut)
 		}
-		_, _ = io.WriteString(stdout, kube.RedactKubectlStdout(args, out))
+		_, _ = io.WriteString(stdout, redact.RedactKubectlStdout(args, out))
 		if InvalidatesLiveCache(args) {
 			InvalidateLive()
 		}
@@ -375,7 +377,7 @@ func InvalidatesLiveCache(args []string) bool {
 	if dryRunKeeps(args) {
 		return false
 	}
-	words := kube.PositionalWords(args).Words
+	words := parse.PositionalWords(args).Words
 	if len(words) == 0 {
 		return true
 	}
@@ -901,13 +903,13 @@ func LiveCluster(engineLine string) (kube.Cluster, bool) {
 		return kube.Cluster{}, false
 	}
 	var tokens []string
-	for _, token := range kube.Tokenize(engineLine) {
-		tokens = append(tokens, kube.Unquote(token.Text))
+	for _, token := range parse.Tokenize(engineLine) {
+		tokens = append(tokens, parse.Unquote(token.Text))
 	}
 	if len(tokens) == 0 {
 		tokens = []string{"kubectl"}
 	}
-	scope := kube.ScopeOf(tokens, base)
+	scope := parse.ScopeOf(tokens, base)
 	keyNS := scope.NS
 	if scope.All {
 		keyNS = "*"

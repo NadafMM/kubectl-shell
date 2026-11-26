@@ -1,7 +1,5 @@
 package kube
 
-import "strings"
-
 // Plan describes what a kubectl line will touch without running it.
 type Plan struct {
 	Command       string   `json:"command"`
@@ -147,32 +145,6 @@ func PromptOf(cluster Cluster) string {
 	return ctx.Name + ":" + ctx.Namespace
 }
 
-var singular map[string]string
-
-func init() {
-	singular = map[string]string{}
-	for _, resource := range Resources {
-		singular[resource.Singular] = resource.Name
-		for _, short := range resource.Short {
-			singular[short] = resource.Name
-		}
-	}
-}
-
-func ResolveResource(token string) (Resource, bool) {
-	raw := strings.ToLower(strings.Split(token, "/")[0])
-	name := raw
-	if mapped, ok := singular[raw]; ok {
-		name = mapped
-	}
-	for _, resource := range Resources {
-		if resource.Name == name || ContainsString(resource.Short, raw) || resource.Singular == raw {
-			return resource, true
-		}
-	}
-	return Resource{}, false
-}
-
 // ContainsString reports whether want is in items.
 func ContainsString(items []string, want string) bool {
 	for _, item := range items {
@@ -181,36 +153,4 @@ func ContainsString(items []string, want string) bool {
 		}
 	}
 	return false
-}
-
-func FlagCatalog(verb string) []FlagDef {
-	seen := map[string]bool{}
-	var out []FlagDef
-	add := func(flags []FlagDef) {
-		for _, flag := range flags {
-			if seen[flag.Name] {
-				continue
-			}
-			seen[flag.Name] = true
-			out = append(out, flag)
-		}
-	}
-	if verb != "" {
-		add(VerbFlags[verb])
-	}
-	add(GlobalFlags)
-	return out
-}
-
-func TakesOf(flag, verb string) string {
-	name := flag
-	if i := strings.Index(flag, "="); i >= 0 {
-		name = flag[:i]
-	}
-	for _, flagDef := range FlagCatalog(verb) {
-		if flagDef.Name == name {
-			return flagDef.Takes
-		}
-	}
-	return ""
 }
