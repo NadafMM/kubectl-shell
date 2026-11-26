@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NadafMM/kubectl-shell/internal/kube"
 	"github.com/NadafMM/kubectl-shell/internal/kube/live"
 	ksandbox "github.com/NadafMM/kubectl-shell/internal/kube/sandbox"
+	ksession "github.com/NadafMM/kubectl-shell/internal/kube/session"
 )
 
 func withFakeEnv(t *testing.T) {
@@ -129,7 +129,7 @@ func TestAskJSONReportsOOM(t *testing.T) {
 
 func TestRecordFlagWritesSession(t *testing.T) {
 	withFakeEnv(t)
-	t.Cleanup(func() { kube.StopRecord() })
+	t.Cleanup(func() { ksession.StopRecord() })
 	file := filepath.Join(os.Getenv("HOME"), "out.md")
 	var out, err bytes.Buffer
 	code := run([]string{"--record", file, "get", "pods"}, &out, &err, runOptions{})
@@ -147,7 +147,7 @@ func TestRecordFlagWritesSession(t *testing.T) {
 
 func TestRecordShellDropsRefusedDelete(t *testing.T) {
 	withFakeEnv(t)
-	t.Cleanup(func() { kube.StopRecord() })
+	t.Cleanup(func() { ksession.StopRecord() })
 	script := "record on\ndelete pod worker-0\nget pods --from-literal password=secret\nrecord off\nget ns\n"
 	var out, err bytes.Buffer
 	code := run(nil, &out, &err, runOptions{
@@ -294,7 +294,7 @@ func TestPolicyDeniesExec(t *testing.T) {
 
 func TestAuditTail(t *testing.T) {
 	withFakeEnv(t)
-	kube.AppendAudit(kube.AuditEntry{
+	ksession.AppendAudit(ksession.AuditEntry{
 		ID: "1", Timestamp: "2026-11-24T00:00:00Z", Actor: "human-cli",
 		Context: "minikube", Namespace: "default", Argv: []string{"get", "pods"},
 		Risk: "read", Decision: "executed", Approver: "flag-yes", ExitCode: intPtr(0), DurationMs: 1,

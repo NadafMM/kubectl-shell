@@ -2,6 +2,10 @@ package view
 
 import (
 	"fmt"
+	"github.com/NadafMM/kubectl-shell/internal/kube/parse"
+	kpolicy "github.com/NadafMM/kubectl-shell/internal/kube/policy"
+	"github.com/NadafMM/kubectl-shell/internal/kube/redact"
+	ksession "github.com/NadafMM/kubectl-shell/internal/kube/session"
 	"io"
 	"os"
 	"strings"
@@ -25,7 +29,7 @@ type ViewOptions struct {
 	Stdin        *os.File
 	StdoutFile   *os.File
 	ForcePlain   bool
-	Policy       *kube.Policy
+	Policy       *kpolicy.Policy
 }
 
 func lookupText(verb string, row Row) string {
@@ -49,21 +53,21 @@ func lookupText(verb string, row Row) string {
 	return strings.TrimRight(text, " \t\r\n")
 }
 
-func runViewDelete(plan kube.Plan, yes bool, policy *kube.Policy, actor string) string {
+func runViewDelete(plan kube.Plan, yes bool, policy *kpolicy.Policy, actor string) string {
 	started := time.Now()
-	argv := kube.KubectlArgs(plan.Command)
-	auth := kube.Authorize(kube.AuthRequest{
+	argv := parse.KubectlArgs(plan.Command)
+	auth := kpolicy.Authorize(kpolicy.AuthRequest{
 		Plan: plan, Argv: argv, Policy: policy, Yes: yes,
 		PolicyContext: plan.Context,
-	}, func(planID string, expect kube.PlanExpect) (bool, string) {
-		return kube.ConsumePlan(planID, expect, time.Now())
+	}, func(planID string, expect kpolicy.PlanExpect) (bool, string) {
+		return kpolicy.ConsumePlan(planID, expect, time.Now())
 	})
 	if !auth.OK {
-		if kube.AuditEnabled(policy) {
-			kube.AppendAudit(kube.AuditEntry{
-				ID: kube.NewAuditId(), Timestamp: time.Now().UTC().Format(time.RFC3339),
+		if ksession.AuditEnabled(policy) {
+			ksession.AppendAudit(ksession.AuditEntry{
+				ID: ksession.NewAuditId(), Timestamp: time.Now().UTC().Format(time.RFC3339),
 				Actor: actor, Context: plan.Context, Namespace: plan.Namespace,
-				Argv: kube.RedactArgv(argv), Risk: plan.Risk, Decision: auth.AuditDecision,
+				Argv: redact.RedactArgv(argv), Risk: plan.Risk, Decision: auth.AuditDecision,
 				Approver: "none",
 			}, 0)
 		}
@@ -71,15 +75,15 @@ func runViewDelete(plan kube.Plan, yes bool, policy *kube.Policy, actor string) 
 	}
 	// View already collected y/N when yes is false; RequireConfirm is treated as armed.
 	code, stdout, stderr := live.CaptureLive(argv)
-	if kube.AuditEnabled(policy) {
+	if ksession.AuditEnabled(policy) {
 		exit := code
-		kube.AppendAudit(kube.AuditEntry{
-			ID:         kube.NewAuditId(),
+		ksession.AppendAudit(ksession.AuditEntry{
+			ID:         ksession.NewAuditId(),
 			Timestamp:  time.Now().UTC().Format(time.RFC3339),
 			Actor:      actor,
 			Context:    plan.Context,
 			Namespace:  plan.Namespace,
-			Argv:       kube.RedactArgv(argv),
+			Argv:       redact.RedactArgv(argv),
 			Risk:       plan.Risk,
 			Decision:   "executed",
 			Approver:   auth.Approver,

@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/NadafMM/kubectl-shell/internal/kube/parse"
+	kpolicy "github.com/NadafMM/kubectl-shell/internal/kube/policy"
+	"github.com/NadafMM/kubectl-shell/internal/kube/redact"
+	ksession "github.com/NadafMM/kubectl-shell/internal/kube/session"
 	"io"
 	"os"
 	"strconv"
@@ -41,7 +45,7 @@ type session struct {
 	agent          bool
 	planID         string
 	confirmContext string
-	policy         *kube.Policy
+	policy         *kpolicy.Policy
 	stdinTTY       bool
 }
 
@@ -53,7 +57,7 @@ func run(args []string, stdout, stderr io.Writer, opts runOptions) int {
 	if len(args) > 0 && args[0] == "__complete" {
 		return complete(args[1:], stdout)
 	}
-	flags := kube.ParseLeadingFlags(args)
+	flags := parse.ParseLeadingFlags(args)
 	if flags.Error != "" {
 		fmt.Fprintln(stderr, flags.Error)
 		return 1
@@ -77,7 +81,7 @@ func run(args []string, stdout, stderr io.Writer, opts runOptions) int {
 	if opts.agent != nil {
 		agent = *opts.agent
 	}
-	if flags.Yes && !kube.AllowYes(flags.Yes, len(rest), stdinTTY) {
+	if flags.Yes && !kpolicy.AllowYes(flags.Yes, len(rest), stdinTTY) {
 		fmt.Fprintln(stderr, "`--yes` applies to one command, not the shell.")
 		return 1
 	}
@@ -86,15 +90,15 @@ func run(args []string, stdout, stderr io.Writer, opts runOptions) int {
 	if !agent {
 		envPolicy = os.Getenv("KUBE_SHELL_POLICY")
 	}
-	policy, errMsg := kube.ReadPolicy(kube.PolicyFile(agent, flags.Policy, envPolicy))
+	policy, errMsg := kpolicy.ReadPolicy(kpolicy.PolicyFile(agent, flags.Policy, envPolicy))
 	if errMsg != "" {
 		fmt.Fprintf(stderr, "kube: %s\n", errMsg)
 		return 1
 	}
 	// match_non_tty: non-interactive clients follow agent allow / write_requires.
-	if !agent && kube.MatchNonTtyAgent(policy, stdinTTY) {
+	if !agent && kpolicy.MatchNonTtyAgent(policy, stdinTTY) {
 		agent = true
-		policy, errMsg = kube.ReadPolicy(kube.PolicyFile(true, "", ""))
+		policy, errMsg = kpolicy.ReadPolicy(kpolicy.PolicyFile(true, "", ""))
 		if errMsg != "" {
 			fmt.Fprintf(stderr, "kube: %s\n", errMsg)
 			return 1
@@ -114,7 +118,7 @@ func run(args []string, stdout, stderr io.Writer, opts runOptions) int {
 		if ctx == "" {
 			ctx = "none"
 		}
-		kube.StartRecord(flags.Record, ctx, ns, time.Now().UTC().Format(time.RFC3339Nano))
+		ksession.StartRecord(flags.Record, ctx, ns, time.Now().UTC().Format(time.RFC3339Nano))
 	}
 
 	if len(rest) == 0 {
@@ -144,7 +148,7 @@ func run(args []string, stdout, stderr io.Writer, opts runOptions) int {
 		if len(rest) > 1 {
 			shell = rest[1]
 		}
-		script := kube.CompletionScript(shell)
+		script := parse.CompletionScript(shell)
 		if script == "" {
 			fmt.Fprintln(stderr, "usage: kube completion bash|zsh|fish|powershell")
 			return 1
@@ -159,7 +163,7 @@ func run(args []string, stdout, stderr io.Writer, opts runOptions) int {
 		return mcpCommand(host, stdout, stderr, opts)
 	}
 
-	meta := kube.MetaOf(strings.Join(rest, " "))
+	meta := parse.MetaOf(strings.Join(rest, " "))
 	switch meta {
 	case "view", "ui":
 		return viewCommand(rest[1:], host, stdout, stderr, opts)
@@ -169,7 +173,7 @@ func run(args []string, stdout, stderr io.Writer, opts runOptions) int {
 		if !ok {
 			return 1
 		}
-		scope := &kube.ShellScope{}
+		scope := &ksession.ShellScope{}
 		result := runUserLine(strings.Join(rest, " "), cluster, makeLineHost(host, stdout, stderr, opts, scope))
 		if result.output != "\x1bc" {
 			writeLineResult(result, stdout, stderr)
@@ -248,7 +252,7 @@ func complete(args []string, stdout io.Writer) int {
 	if !cursorSet {
 		cursor = len(line)
 	}
-	view := kube.ToEngine(line, cursor, "shell")
+	view := parse.ToEngine(line, cursor, "shell")
 	if view.Skip {
 		return 0
 	}
@@ -259,12 +263,12 @@ func complete(args []string, stdout io.Writer) int {
 	found := kcomplete.Complete(view.Line, view.Cursor, cluster)
 	var values []kube.Candidate
 	for _, item := range found.Candidates {
-		value, ok := kube.CompletionValue(item.Value)
+		value, ok := parse.CompletionValue(item.Value)
 		if !ok {
 			continue
 		}
 		item.Value = value
-		item.Detail = kube.PlainText(item.Detail)
+		item.Detail = parse.PlainText(item.Detail)
 		values = append(values, item)
 	}
 	if asJSON {
@@ -319,7 +323,7 @@ func engineLine(argv []string) (string, bool) {
 	parts := make([]string, 0, len(argv)+1)
 	parts = append(parts, "kubectl")
 	for _, arg := range argv {
-		quoted, ok := kube.QuoteArg(arg)
+		quoted, ok := parse.QuoteArg(arg)
 		if !ok {
 			return "", false
 		}
@@ -365,7 +369,7 @@ func planCommand(args []string, stdout, stderr io.Writer) int {
 		PlanID string       `json:"planId,omitempty"`
 	}
 	out := payload{Plan: plan, Blast: blast}
-	id, err := kube.MintPlan(kube.PlanExpect{Context: plan.Context, Namespace: plan.Namespace, Argv: argv}, time.Now())
+	id, err := kpolicy.MintPlan(kpolicy.PlanExpect{Context: plan.Context, Namespace: plan.Namespace, Argv: argv}, time.Now())
 	if err == nil {
 		out.PlanID = id
 	}
@@ -375,16 +379,16 @@ func planCommand(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	agentPlan := os.Getenv("KUBE_SHELL_AGENT") == "1"
-	if policy, _ := kube.ReadPolicy(kube.PolicyFile(agentPlan, "", "")); kube.AuditEnabled(policy) {
+	if policy, _ := kpolicy.ReadPolicy(kpolicy.PolicyFile(agentPlan, "", "")); ksession.AuditEnabled(policy) {
 		actor := "human-cli"
 		if agentPlan {
 			actor = "agent-cli"
 		}
 		zero := 0
-		kube.AppendAudit(kube.AuditEntry{
-			ID: kube.NewAuditId(), Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+		ksession.AppendAudit(ksession.AuditEntry{
+			ID: ksession.NewAuditId(), Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
 			Actor: actor, Context: plan.Context, Namespace: plan.Namespace,
-			Argv: kube.RedactArgv(argv), Risk: plan.Risk, Decision: "planned",
+			Argv: redact.RedactArgv(argv), Risk: plan.Risk, Decision: "planned",
 			Approver: "none", ExitCode: &zero, DurationMs: 0,
 		}, 0)
 	}
@@ -440,7 +444,7 @@ func auditCommand(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 	}
-	lines := kube.TailAudit(count)
+	lines := ksession.TailAudit(count)
 	fmt.Fprintln(stdout, strings.Join(lines, "\n"))
 	return 0
 }
@@ -460,7 +464,7 @@ func runKubectl(argv []string, host session, stdout, stderr io.Writer, opts runO
 		return 1
 	}
 	started := time.Now()
-	auditID := kube.NewAuditId()
+	auditID := ksession.NewAuditId()
 	cluster := clusterFor(line)
 	plan := kplan.PlanCommand(line, cluster)
 	actor := "human-cli"
@@ -470,22 +474,22 @@ func runKubectl(argv []string, host session, stdout, stderr io.Writer, opts runO
 		actor = "human-tty"
 	}
 	writeAudit := func(decision, approver string, exitCode *int) {
-		if !kube.AuditEnabled(host.policy) {
+		if !ksession.AuditEnabled(host.policy) {
 			return
 		}
-		kube.AppendAudit(kube.AuditEntry{
+		ksession.AppendAudit(ksession.AuditEntry{
 			ID: auditID, Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
 			Actor: actor, Context: plan.Context, Namespace: plan.Namespace,
-			Argv: kube.RedactArgv(argv), Risk: plan.Risk, Decision: decision,
+			Argv: redact.RedactArgv(argv), Risk: plan.Risk, Decision: decision,
 			Approver: approver, ExitCode: exitCode, DurationMs: int(time.Since(started).Milliseconds()),
 		}, 0)
 	}
-	auth := kube.Authorize(kube.AuthRequest{
+	auth := kpolicy.Authorize(kpolicy.AuthRequest{
 		Plan: plan, Argv: argv, Policy: host.policy, Agent: host.agent,
 		Yes: host.yes, ConfirmContext: host.confirmContext, PlanID: host.planID,
 		PolicyContext: cluster.Current,
-	}, func(planID string, expect kube.PlanExpect) (bool, string) {
-		return kube.ConsumePlan(planID, expect, time.Now())
+	}, func(planID string, expect kpolicy.PlanExpect) (bool, string) {
+		return kpolicy.ConsumePlan(planID, expect, time.Now())
 	})
 	blastText := ""
 	if !auth.OK {
@@ -511,7 +515,7 @@ func runKubectl(argv []string, host session, stdout, stderr io.Writer, opts runO
 			fmt.Fprintln(stdout, "not run")
 			return 1
 		}
-	} else if warn := kube.SensitiveReadWarning(argv); warn != "" {
+	} else if warn := redact.SensitiveReadWarning(argv); warn != "" {
 		fmt.Fprintln(stderr, warn)
 	}
 	approver := auth.Approver
@@ -535,17 +539,17 @@ func runKubectl(argv []string, host session, stdout, stderr io.Writer, opts runO
 		decision = "dry-run"
 	}
 	writeAudit(decision, approver, &code)
-	entry := kube.RunbookEntry{
+	entry := ksession.RunbookEntry{
 		Decision: decision, Verb: plan.Verb,
 		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
 		Context:   plan.Context, Namespace: plan.Namespace,
-		Command: kube.RedactCommand(argv), Risk: plan.Risk, ExitCode: &code,
+		Command: ksession.RedactCommand(argv), Risk: plan.Risk, ExitCode: &code,
 		Blast: blastText,
 	}
 	if plan.Mutating {
 		entry.Summary = plan.Summary
 	}
-	kube.NoteRan(entry)
+	ksession.NoteRan(entry)
 	return code
 }
 
@@ -661,7 +665,7 @@ func viewCommand(args []string, host session, stdout, stderr io.Writer, opts run
 	if stdoutFile == nil {
 		forcePlain = true
 	}
-	rule := kube.RuleFor(host.policy, cluster.Current)
+	rule := kpolicy.RuleFor(host.policy, cluster.Current)
 	view.OpenView(cluster, view.ViewOptions{
 		Board:        board,
 		All:          all,
@@ -756,6 +760,6 @@ func defaultConfirm(stderr io.Writer) func(string) bool {
 		if tty != os.Stdin {
 			defer tty.Close()
 		}
-		return kube.ConfirmLine(tty, tty, prompt)
+		return kpolicy.ConfirmLine(tty, tty, prompt)
 	}
 }

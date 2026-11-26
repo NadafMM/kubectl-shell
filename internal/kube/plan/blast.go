@@ -3,6 +3,7 @@ package plan
 import (
 	"encoding/json"
 	"github.com/NadafMM/kubectl-shell/internal/kube"
+	"github.com/NadafMM/kubectl-shell/internal/kube/parse"
 	"sort"
 	"strconv"
 	"strings"
@@ -475,11 +476,11 @@ type target struct {
 }
 
 func targetOf(args []string) (target, string) {
-	rest := kube.PositionalWords(args).Words
+	rest := parse.PositionalWords(args).Words
 	if len(rest) > 0 {
 		rest = rest[1:]
 	}
-	selector, _ := kube.FlagValue(args, []string{"-l", "--selector"})
+	selector, _ := parse.FlagValue(args, []string{"-l", "--selector"})
 	all := false
 	for _, token := range args {
 		if token == "--all" || token == "--all=true" {
@@ -513,14 +514,14 @@ func targetOf(args []string) (target, string) {
 			return target{}, "mixed"
 		}
 		token := kinds[0]
-		res, ok := kube.ResolveResource(token)
+		res, ok := parse.ResolveResource(token)
 		return target{token: token, names: names, resource: res, hasRes: ok, all: false}, "ok"
 	}
 	if len(rest) == 0 {
 		return target{}, "null"
 	}
 	token := rest[0]
-	res, ok := kube.ResolveResource(token)
+	res, ok := parse.ResolveResource(token)
 	names := append([]string{}, rest[1:]...)
 	if !all && selector == "" && len(names) == 0 {
 		return target{}, "null"
@@ -1306,10 +1307,10 @@ func blastFiles(files []string, plan kube.Plan, a asked, f fetch) Blast {
 		kind string
 		ns   string
 	}
-	groups := map[groupKey][]kube.ManifestRef{}
+	groups := map[groupKey][]parse.ManifestRef{}
 	var order []groupKey
 	for _, file := range files {
-		refs, errMsg, ok := kube.ManifestRefs(file)
+		refs, errMsg, ok := parse.ManifestRefs(file)
 		if !ok {
 			return unknown("manifest: " + errMsg)
 		}
@@ -1334,7 +1335,7 @@ func blastFiles(files []string, plan kube.Plan, a asked, f fetch) Blast {
 		group := groups[key]
 		token := group[0].Kind
 		token = strings.ToLower(token)
-		res, hasRes := kube.ResolveResource(token)
+		res, hasRes := parse.ResolveResource(token)
 		ns := group[0].Namespace
 		if ns == "" {
 			ns = fallbackNS
@@ -1385,7 +1386,7 @@ func blastFiles(files []string, plan kube.Plan, a asked, f fetch) Blast {
 }
 
 func blastDrain(args []string, plan kube.Plan, f fetch, a asked) Blast {
-	words := kube.PositionalWords(args).Words
+	words := parse.PositionalWords(args).Words
 	if len(words) < 2 {
 		return skipped("no name or selector")
 	}
@@ -1419,7 +1420,7 @@ func blastDrain(args []string, plan kube.Plan, f fetch, a asked) Blast {
 			filtered = append(filtered, item)
 		}
 	}
-	res, _ := kube.ResolveResource("pod")
+	res, _ := parse.ResolveResource("pod")
 	return fromItems(filtered, res, true, a, f, fallbackNS, false)
 }
 
@@ -1433,7 +1434,7 @@ func BlastRadius(plan kube.Plan, args []string, getJSON func([]string) live.Kube
 	a := askedOf(args)
 	scaleZero := false
 	if plan.Verb == "scale" {
-		if value, ok := kube.FlagValue(args, []string{"--replicas"}); ok && value == "0" {
+		if value, ok := parse.FlagValue(args, []string{"--replicas"}); ok && value == "0" {
 			scaleZero = true
 		}
 	}

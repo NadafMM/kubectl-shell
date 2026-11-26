@@ -2,6 +2,7 @@ package complete
 
 import (
 	"github.com/NadafMM/kubectl-shell/internal/kube"
+	"github.com/NadafMM/kubectl-shell/internal/kube/parse"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,7 +67,7 @@ func TestResolveResourceKinds(t *testing.T) {
 		"customresourcedefinitions": "customresourcedefinition",
 	}
 	for name, kind := range checks {
-		got, ok := kube.ResolveResource(name)
+		got, ok := parse.ResolveResource(name)
 		if !ok || got.Kind != kind {
 			t.Fatalf("%s -> %#v", name, got)
 		}
@@ -126,11 +127,11 @@ func TestManifestCompletion(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "k8s", "web.yaml"), []byte("kind: Service\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	top := kube.ManifestCandidates("", root)
+	top := parse.ManifestCandidates("", root)
 	if !hasValue(top, "deploy.yaml") || !hasValue(top, "k8s/") {
 		t.Fatal(top)
 	}
-	nested := kube.ManifestCandidates("k8s/w", root)
+	nested := parse.ManifestCandidates("k8s/w", root)
 	if len(nested) != 1 || nested[0].Value != "k8s/web.yaml" {
 		t.Fatal(nested)
 	}
@@ -158,17 +159,17 @@ func TestSymlinkManifestIsSkipped(t *testing.T) {
 	if err := os.Symlink(target, filepath.Join(root, "deploy.yaml")); err != nil {
 		t.Fatal(err)
 	}
-	if hasValue(kube.ManifestCandidates("", root), "deploy.yaml") {
+	if hasValue(parse.ManifestCandidates("", root), "deploy.yaml") {
 		t.Fatal("symlink should not be a candidate")
 	}
 }
 
 func TestCompletionValueDropsMetacharacters(t *testing.T) {
-	if got, ok := kube.CompletionValue("deploy.yaml"); !ok || got != "deploy.yaml" {
+	if got, ok := parse.CompletionValue("deploy.yaml"); !ok || got != "deploy.yaml" {
 		t.Fatal(got, ok)
 	}
 	for _, value := range []string{"foo$(id).yaml", "foo`id`.yaml", "foo;id.yaml", "foo|id.yaml", "foo\nid.yaml"} {
-		if _, ok := kube.CompletionValue(value); ok {
+		if _, ok := parse.CompletionValue(value); ok {
 			t.Fatal(value)
 		}
 	}

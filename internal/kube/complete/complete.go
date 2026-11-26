@@ -2,6 +2,7 @@ package complete
 
 import (
 	"github.com/NadafMM/kubectl-shell/internal/kube"
+	"github.com/NadafMM/kubectl-shell/internal/kube/parse"
 	"math"
 	"regexp"
 	"sort"
@@ -148,7 +149,7 @@ func abs(n int) int {
 	return n
 }
 
-func valueItems(kind string, args []string, cluster kube.Cluster, scope kube.Scope, prefix string) []kube.Candidate {
+func valueItems(kind string, args []string, cluster kube.Cluster, scope parse.Scope, prefix string) []kube.Candidate {
 	switch kind {
 	case "namespace":
 		out := make([]kube.Candidate, 0, len(cluster.Namespaces))
@@ -173,7 +174,7 @@ func valueItems(kind string, args []string, cluster kube.Cluster, scope kube.Sco
 		}
 		if len(names) == 0 {
 			for _, item := range cluster.Objects {
-				if item.Kind == "pod" && kube.InScope(item.NS, scope) {
+				if item.Kind == "pod" && parse.InScope(item.NS, scope) {
 					for _, container := range item.Containers {
 						names[container.Name] = true
 					}
@@ -187,7 +188,7 @@ func valueItems(kind string, args []string, cluster kube.Cluster, scope kube.Sco
 		sort.Slice(out, func(i, j int) bool { return out[i].Value < out[j].Value })
 		return out
 	case "file", "dir":
-		return kube.ManifestCandidates(prefix, "")
+		return parse.ManifestCandidates(prefix, "")
 	case "selector":
 		return selectorItems(scope, cluster)
 	case "replicas":
@@ -261,11 +262,11 @@ func numbered(values []string, detail string, start int) []kube.Candidate {
 	return out
 }
 
-func selectorItems(scope kube.Scope, cluster kube.Cluster) []kube.Candidate {
+func selectorItems(scope parse.Scope, cluster kube.Cluster) []kube.Candidate {
 	seen := map[string]bool{}
 	var items []kube.Candidate
 	for _, object := range cluster.Objects {
-		if !kube.InScope(object.NS, scope) {
+		if !parse.InScope(object.NS, scope) {
 			continue
 		}
 		keys := make([]string, 0, len(object.Labels))
@@ -285,14 +286,14 @@ func selectorItems(scope kube.Scope, cluster kube.Cluster) []kube.Candidate {
 	return items
 }
 
-func referencedPods(args []string, scope kube.Scope, cluster kube.Cluster) []kube.KObject {
+func referencedPods(args []string, scope parse.Scope, cluster kube.Cluster) []kube.KObject {
 	names := map[string]bool{}
-	for _, word := range kube.PositionalWords(args).Words {
+	for _, word := range parse.PositionalWords(args).Words {
 		names[word] = true
 	}
 	var out []kube.KObject
 	for _, object := range cluster.Objects {
-		if object.Kind == "pod" && kube.InScope(object.NS, scope) && names[object.Name] {
+		if object.Kind == "pod" && parse.InScope(object.NS, scope) && names[object.Name] {
 			out = append(out, object)
 		}
 	}
@@ -316,7 +317,7 @@ func shellWords() []kube.Candidate {
 var equalsFlag = regexp.MustCompile(`^(--?[A-Za-z0-9-]+)=(.*)$`)
 
 func Complete(line string, cursor int, cluster kube.Cluster) Completion {
-	loc := kube.Locate(line, cursor)
+	loc := parse.Locate(line, cursor)
 	prior := make([]string, 0, loc.Index)
 	for _, token := range loc.Tokens[:loc.Index] {
 		prior = append(prior, token.Text)
@@ -331,7 +332,7 @@ func Complete(line string, cursor int, cluster kube.Cluster) Completion {
 		items := []kube.Candidate{{
 			Value: "kubectl", Detail: "Kubernetes CLI", Kind: "command", Weight: 100, Aliases: []string{"k"},
 		}}
-		items = append(items, kube.ShellCommandCandidates(prefix)...)
+		items = append(items, parse.ShellCommandCandidates(prefix)...)
 		items = append(items, kube.Candidate{Value: "help", Detail: "How Tab completion works here", Kind: "command", Weight: 10})
 		base.Candidates = rank(prefix, items)
 		return base
@@ -340,34 +341,34 @@ func Complete(line string, cursor int, cluster kube.Cluster) Completion {
 	bin := prior[0]
 	if bin == "view" || bin == "ui" {
 		if len(prior) == 1 {
-			base.Candidates = rank(prefix, append([]kube.Candidate{}, kube.ViewArgs...))
+			base.Candidates = rank(prefix, append([]kube.Candidate{}, parse.ViewArgs...))
 			return base
 		}
 	}
 
 	if bin != "kubectl" && bin != "k" && bin != "help" {
-		shell := kube.ShellCommandCandidates(bin)
+		shell := parse.ShellCommandCandidates(bin)
 		if len(shell) > 0 {
 			base.Candidates = rank(prefix, shell)
 			return base
 		}
-		base.Candidates = rank(prefix, append(kube.ShellCommandCandidates(bin), kube.Candidate{
+		base.Candidates = rank(prefix, append(parse.ShellCommandCandidates(bin), kube.Candidate{
 			Value: "kubectl", Detail: "Commands start with kubectl", Kind: "command", Weight: 60,
 		}))
 		return base
 	}
 
 	if bin == "help" {
-		base.Candidates = rank(prefix, kube.VerbCandidates())
+		base.Candidates = rank(prefix, parse.VerbCandidates())
 		return base
 	}
 
 	args := prior[1:]
-	scope := kube.ScopeOf(append([]string{"kubectl"}, args...), cluster)
+	scope := parse.ScopeOf(append([]string{"kubectl"}, args...), cluster)
 
 	if equals := equalsFlag.FindStringSubmatch(prefix); equals != nil {
 		flag := equals[1]
-		kind := kube.TakesOf(flag, kube.VerbOf(args))
+		kind := parse.TakesOf(flag, parse.VerbOf(args))
 		var values []kube.Candidate
 		if kind != "" {
 			values = valueItems(kind, args, cluster, scope, equals[2])
@@ -382,7 +383,7 @@ func Complete(line string, cursor int, cluster kube.Cluster) Completion {
 	}
 
 	if strings.HasPrefix(prefix, "-") {
-		base.Candidates = rank(prefix, kube.FlagItems(kube.VerbOf(args)))
+		base.Candidates = rank(prefix, parse.FlagItems(parse.VerbOf(args)))
 		return base
 	}
 
@@ -390,28 +391,28 @@ func Complete(line string, cursor int, cluster kube.Cluster) Completion {
 	if len(args) > 0 {
 		previous = args[len(args)-1]
 	}
-	verb := kube.VerbOf(args)
-	if previous != "" && kube.TakesOf(previous, verb) != "" && !strings.Contains(previous, "=") {
-		kind := kube.TakesOf(previous, verb)
+	verb := parse.VerbOf(args)
+	if previous != "" && parse.TakesOf(previous, verb) != "" && !strings.Contains(previous, "=") {
+		kind := parse.TakesOf(previous, verb)
 		base.Candidates = rank(prefix, valueItems(kind, args[:len(args)-1], cluster, scope, prefix))
 		return base
 	}
 
-	parsed := kube.PositionalWords(args)
+	parsed := parse.PositionalWords(args)
 	if parsed.AfterDashDash {
 		base.Candidates = rank(prefix, shellWords())
 		return base
 	}
 	if len(parsed.Words) == 0 {
-		base.Candidates = rank(prefix, kube.VerbCandidates())
+		base.Candidates = rank(prefix, parse.VerbCandidates())
 		return base
 	}
 	rest := parsed.Words[1:]
 	if strings.Contains(prefix, "/") && len(rest) == 0 {
 		slash := strings.Index(prefix, "/")
-		base.Candidates = rank(prefix, kube.SlashNames(prefix[:slash], prefix[slash+1:], scope, cluster))
+		base.Candidates = rank(prefix, parse.SlashNames(prefix[:slash], prefix[slash+1:], scope, cluster))
 		return base
 	}
-	base.Candidates = rank(prefix, kube.CandidatesFor(verb, rest, args, scope, cluster, prefix))
+	base.Candidates = rank(prefix, parse.CandidatesFor(verb, rest, args, scope, cluster, prefix))
 	return base
 }

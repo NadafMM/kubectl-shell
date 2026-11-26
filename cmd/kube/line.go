@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/NadafMM/kubectl-shell/internal/kube/parse"
+	kpolicy "github.com/NadafMM/kubectl-shell/internal/kube/policy"
+	"github.com/NadafMM/kubectl-shell/internal/kube/redact"
+	ksession "github.com/NadafMM/kubectl-shell/internal/kube/session"
 	"io"
 	"os"
 	"strconv"
@@ -32,7 +36,7 @@ type lineHost struct {
 	stderr  io.Writer
 	stdout  io.Writer
 	opts    runOptions
-	scope   *kube.ShellScope
+	scope   *ksession.ShellScope
 }
 
 func writeLineResult(result lineResult, stdout, stderr io.Writer) {
@@ -52,10 +56,10 @@ func writeLineResult(result lineResult, stdout, stderr io.Writer) {
 
 func runUserLine(line string, cluster kube.Cluster, host lineHost) lineResult {
 	trimmed := strings.TrimSpace(line)
-	meta := kube.MetaOf(trimmed)
+	meta := parse.MetaOf(trimmed)
 	scope := host.scope
 	if scope == nil {
-		scope = &kube.ShellScope{}
+		scope = &ksession.ShellScope{}
 		host.scope = scope
 	}
 
@@ -104,7 +108,7 @@ func runUserLine(line string, cluster kube.Cluster, host lineHost) lineResult {
 		if parts := strings.Fields(trimmed); len(parts) > 1 {
 			shell = parts[1]
 		}
-		script := kube.CompletionScript(shell)
+		script := parse.CompletionScript(shell)
 		if script == "" {
 			return lineResult{output: "usage: kube completion bash|zsh|fish|powershell", ok: false, cluster: cluster}
 		}
@@ -125,9 +129,9 @@ func runUserLine(line string, cluster kube.Cluster, host lineHost) lineResult {
 			return lineResult{output: "no current context", ok: false, cluster: cluster}
 		}
 		if meta == "ns" {
-			return lineResult{output: "namespace " + name, ok: true, cluster: kube.UseNamespace(cluster, scope, name)}
+			return lineResult{output: "namespace " + name, ok: true, cluster: ksession.UseNamespace(cluster, scope, name)}
 		}
-		next, ok := kube.UseContext(cluster, scope, name)
+		next, ok := ksession.UseContext(cluster, scope, name)
 		if !ok {
 			return lineResult{output: "no context " + name, ok: false, cluster: cluster}
 		}
@@ -145,7 +149,7 @@ func runUserLine(line string, cluster kube.Cluster, host lineHost) lineResult {
 				word = part
 			}
 		}
-		rule := kube.RuleFor(host.policy, cluster.Current)
+		rule := kpolicy.RuleFor(host.policy, cluster.Current)
 		forcePlain := host.opts.forcePlain
 		stdoutFile, _ := host.stdout.(*os.File)
 		if stdoutFile == nil {
@@ -182,7 +186,7 @@ func runUserLine(line string, cluster kube.Cluster, host lineHost) lineResult {
 		}
 		question = strings.ReplaceAll(question, "--json", "")
 		question = strings.Trim(strings.TrimSpace(question), `"'`)
-		advice := kplan.AskAdvice(question, cluster, kube.ContextArgs(scope))
+		advice := kplan.AskAdvice(question, cluster, ksession.ContextArgs(scope))
 		if asJSON {
 			encoded, err := json.Marshal(advice)
 			if err != nil {
@@ -207,7 +211,7 @@ func runUserLine(line string, cluster kube.Cluster, host lineHost) lineResult {
 		trimmed = advice.Commands[0]
 	}
 
-	view := kube.ToEngine(trimmed, len(trimmed), "repl")
+	view := parse.ToEngine(trimmed, len(trimmed), "repl")
 	return executeEngine(view.Line, cluster, scope, host)
 }
 
@@ -271,7 +275,7 @@ func recordLine(trimmed string, cluster kube.Cluster) lineResult {
 		action = parts[1]
 	}
 	if action == "off" {
-		file := kube.StopRecord()
+		file := ksession.StopRecord()
 		if file == "" {
 			return lineResult{output: "not recording", ok: true, cluster: cluster}
 		}
@@ -289,7 +293,7 @@ func recordLine(trimmed string, cluster kube.Cluster) lineResult {
 		if ctx == "" {
 			ctx = "none"
 		}
-		file = kube.SessionPath(ctx, time.Now())
+		file = ksession.SessionPath(ctx, time.Now())
 	}
 	ns := kube.NamespaceOf(cluster)
 	if ns == "" {
@@ -299,7 +303,7 @@ func recordLine(trimmed string, cluster kube.Cluster) lineResult {
 	if ctx == "" {
 		ctx = "none"
 	}
-	started := kube.StartRecord(file, ctx, ns, time.Now().UTC().Format(time.RFC3339Nano))
+	started := ksession.StartRecord(file, ctx, ns, time.Now().UTC().Format(time.RFC3339Nano))
 	return lineResult{output: "recording " + started, ok: true, cluster: cluster}
 }
 
@@ -316,10 +320,10 @@ func auditLine(trimmed string, cluster kube.Cluster) lineResult {
 			}
 		}
 	}
-	return lineResult{output: strings.Join(kube.TailAudit(count), "\n"), ok: true, cluster: cluster}
+	return lineResult{output: strings.Join(ksession.TailAudit(count), "\n"), ok: true, cluster: cluster}
 }
 
-func planLine(trimmed string, cluster kube.Cluster, scope *kube.ShellScope) lineResult {
+func planLine(trimmed string, cluster kube.Cluster, scope *ksession.ShellScope) lineResult {
 	asJSON := strings.Contains(" "+trimmed+" ", " --json ")
 	body := trimmed
 	if strings.HasPrefix(body, "plan") {
@@ -330,9 +334,9 @@ func planLine(trimmed string, cluster kube.Cluster, scope *kube.ShellScope) line
 	if body == "" {
 		return lineResult{output: "usage: kube plan [--json] delete pod <name>", ok: false, cluster: cluster}
 	}
-	view := kube.ToEngine(body, len(body), "repl")
+	view := parse.ToEngine(body, len(body), "repl")
 	planned := kplan.PlanCommand(view.Line, cluster)
-	argv := kube.CommandArgs(view.Line, scope)
+	argv := ksession.CommandArgs(view.Line, scope)
 	var blast *kplan.Blast
 	if wantsBlast(planned) {
 		report := liveBlast(planned, argv)
@@ -353,7 +357,7 @@ func planLine(trimmed string, cluster kube.Cluster, scope *kube.ShellScope) line
 		PlanID string       `json:"planId,omitempty"`
 	}
 	out := payload{Plan: planned, Blast: blast}
-	id, err := kube.MintPlan(kube.PlanExpect{Context: planned.Context, Namespace: planned.Namespace, Argv: argv}, time.Now())
+	id, err := kpolicy.MintPlan(kpolicy.PlanExpect{Context: planned.Context, Namespace: planned.Namespace, Argv: argv}, time.Now())
 	if err == nil {
 		out.PlanID = id
 	}
@@ -364,16 +368,16 @@ func planLine(trimmed string, cluster kube.Cluster, scope *kube.ShellScope) line
 	return lineResult{output: string(encoded), ok: true, cluster: cluster}
 }
 
-func executeEngine(engineLine string, cluster kube.Cluster, scope *kube.ShellScope, host lineHost) lineResult {
+func executeEngine(engineLine string, cluster kube.Cluster, scope *ksession.ShellScope, host lineHost) lineResult {
 	planned := kplan.PlanCommand(engineLine, cluster)
 	started := time.Now()
-	auditID := kube.NewAuditId()
-	argv := kube.CommandArgs(engineLine, scope)
+	auditID := ksession.NewAuditId()
+	argv := ksession.CommandArgs(engineLine, scope)
 	scopeCtx := ""
 	if scope != nil {
 		scopeCtx = scope.Context
 	}
-	policyCtx := kube.EffectiveContext(cluster.Current, scopeCtx)
+	policyCtx := kpolicy.EffectiveContext(cluster.Current, scopeCtx)
 	actor := "human-cli"
 	if host.agent {
 		actor = "agent-cli"
@@ -381,22 +385,22 @@ func executeEngine(engineLine string, cluster kube.Cluster, scope *kube.ShellSco
 		actor = "human-tty"
 	}
 	writeAudit := func(decision, approver string, exitCode *int) {
-		if !kube.AuditEnabled(host.policy) {
+		if !ksession.AuditEnabled(host.policy) {
 			return
 		}
-		kube.AppendAudit(kube.AuditEntry{
+		ksession.AppendAudit(ksession.AuditEntry{
 			ID: auditID, Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
 			Actor: actor, Context: planned.Context, Namespace: planned.Namespace,
-			Argv: kube.RedactArgv(argv), Risk: planned.Risk, Decision: decision,
+			Argv: redact.RedactArgv(argv), Risk: planned.Risk, Decision: decision,
 			Approver: approver, ExitCode: exitCode, DurationMs: int(time.Since(started).Milliseconds()),
 		}, 0)
 	}
-	auth := kube.Authorize(kube.AuthRequest{
+	auth := kpolicy.Authorize(kpolicy.AuthRequest{
 		Plan: planned, Argv: argv, Policy: host.policy, Agent: host.agent,
 		Yes: host.yes, ConfirmContext: host.confirmContext, PlanID: host.planID,
 		PolicyContext: policyCtx,
-	}, func(planID string, expect kube.PlanExpect) (bool, string) {
-		return kube.ConsumePlan(planID, expect, time.Now())
+	}, func(planID string, expect kpolicy.PlanExpect) (bool, string) {
+		return kpolicy.ConsumePlan(planID, expect, time.Now())
 	})
 	blastText := ""
 	if !auth.OK {
@@ -420,7 +424,7 @@ func executeEngine(engineLine string, cluster kube.Cluster, scope *kube.ShellSco
 			writeAudit("refused-confirm", "none", nil)
 			return lineResult{output: "not run", ok: false, cluster: cluster}
 		}
-	} else if warn := kube.SensitiveReadWarning(argv); warn != "" {
+	} else if warn := redact.SensitiveReadWarning(argv); warn != "" {
 		fmt.Fprintln(host.stderr, warn)
 	}
 	approver := auth.Approver
@@ -444,16 +448,16 @@ func executeEngine(engineLine string, cluster kube.Cluster, scope *kube.ShellSco
 		decision = "dry-run"
 	}
 	writeAudit(decision, approver, &code)
-	entry := kube.RunbookEntry{
+	entry := ksession.RunbookEntry{
 		Decision: decision, Verb: planned.Verb,
 		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
 		Context:   planned.Context, Namespace: planned.Namespace,
-		Command: kube.RedactCommand(argv), Risk: planned.Risk, ExitCode: &code,
+		Command: ksession.RedactCommand(argv), Risk: planned.Risk, ExitCode: &code,
 		Blast: blastText,
 	}
 	if planned.Mutating {
 		entry.Summary = planned.Summary
 	}
-	kube.NoteRan(entry)
+	ksession.NoteRan(entry)
 	return lineResult{ok: code == 0, cluster: live.ApplyLiveContext(cluster)}
 }

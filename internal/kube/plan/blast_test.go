@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"github.com/NadafMM/kubectl-shell/internal/kube"
 	"github.com/NadafMM/kubectl-shell/internal/kube/live"
+	"github.com/NadafMM/kubectl-shell/internal/kube/parse"
 	"strings"
 	"testing"
 )
@@ -189,7 +190,7 @@ func TestBlastRemoteManifestSkipped(t *testing.T) {
 }
 
 func TestParseManifestYAML(t *testing.T) {
-	refs := kube.ParseManifest("kind: Deployment\nmetadata:\n  name: web\n  namespace: app\n")
+	refs := parse.ParseManifest("kind: Deployment\nmetadata:\n  name: web\n  namespace: app\n")
 	if len(refs) != 1 || refs[0].Kind != "Deployment" || refs[0].Name != "web" || refs[0].Namespace != "app" {
 		t.Fatal(refs)
 	}

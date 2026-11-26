@@ -1,13 +1,17 @@
-// Package kube is the shared core for the kube CLI: parsing, policy, plans,
-// redaction, and session state.
+// Package kube holds shared domain types (Cluster, Plan, …), state paths,
+// and test fixtures used by the feature packages.
 //
-// Feature areas live in subpackages:
+// Implementation is split by concern:
 //
-//	live      — kubectl process + completion cache
-//	plan      — PlanCommand, blast radius, ask/diagnose
-//	complete  — word completion
-//	view      — interactive resource table
-//	mcp       — MCP JSON-RPC server
-//	undo      — object undo snapshots
-//	sandbox   — local kind sandbox
+//	parse    — tokenize, grammar, catalog, completion scripts
+//	policy   — policy.json, Authorize, plans, confirm
+//	redact   — secret redaction for argv and kubectl stdout
+//	session  — history, audit, runbook recording, shell scope
+//	live     — kubectl process + completion cache
+//	plan     — PlanCommand, blast radius, ask/diagnose
+//	complete — word completion
+//	view     — interactive resource table
+//	mcp      — MCP JSON-RPC server
+//	undo     — undo snapshots
+//	sandbox  — local kind sandbox
 package kube

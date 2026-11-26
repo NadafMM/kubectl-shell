@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"github.com/NadafMM/kubectl-shell/internal/kube"
 	"github.com/NadafMM/kubectl-shell/internal/kube/live"
+	"github.com/NadafMM/kubectl-shell/internal/kube/parse"
 	"os"
 	"path/filepath"
 	"sort"
@@ -40,7 +41,7 @@ func undoDir() string {
 }
 
 func singularKind(token string) string {
-	if resource, ok := kube.ResolveResource(token); ok {
+	if resource, ok := parse.ResolveResource(token); ok {
 		return resource.Singular
 	}
 	return strings.ToLower(token)
@@ -48,7 +49,7 @@ func singularKind(token string) string {
 
 // NamedTarget picks a single named object from a mutating kubectl argv.
 func NamedTarget(argv []string) (verb, kind, name string, ok bool) {
-	words := kube.PositionalWords(argv).Words
+	words := parse.PositionalWords(argv).Words
 	if len(words) == 0 || !snapshotVerbs[words[0]] {
 		return "", "", "", false
 	}
@@ -105,7 +106,7 @@ func CleanSnapshot(value any) any {
 }
 
 func namespaceFromArgv(argv []string, cluster kube.Cluster) string {
-	if ns, ok := kube.FlagValue(argv, []string{"-n", "--namespace"}); ok && ns != "" {
+	if ns, ok := parse.FlagValue(argv, []string{"-n", "--namespace"}); ok && ns != "" {
 		return ns
 	}
 	return kube.NamespaceOf(cluster)
