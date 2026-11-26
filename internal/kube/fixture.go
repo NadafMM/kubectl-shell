@@ -14,7 +14,7 @@ func obj(kind, name, ns, age, status, svc string, labels map[string]string) KObj
 	return KObject{Kind: kind, Name: name, NS: ns, Age: age, Status: status, SvcType: svc, Labels: labels}
 }
 
-// template is the practice cluster the TypeScript tests complete against.
+// template is the practice cluster the unit tests complete against.
 // The Go CLI does not serve it; live names arrive with the kubectl runner.
 var template = Cluster{
 	Current: "minikube",

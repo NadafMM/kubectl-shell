@@ -443,7 +443,7 @@ func fillExplain(ctx fillCtx) []kube.Candidate {
 	}
 	out := make([]kube.Candidate, 0, len(ExplainDocs))
 	index := 0
-	// Map iteration order differs from the TypeScript object order. Rank by the
+	// Map iteration order is non-deterministic. Rank by the
 	// catalog order of keys so an empty prefix stays stable.
 	keys := []string{
 		"pods", "pods.metadata", "pods.spec", "pods.spec.containers", "pods.spec.containers.image",
