@@ -10,7 +10,7 @@
 
 ## Requirements
 
-- **Go 1.22+** to build from source (Homebrew installs Go as a build dependency)
+- **Go 1.26+** to build from source (Homebrew installs Go as a build dependency)
 - **`kubectl`** on `PATH`
 - A **reachable cluster** in the current kubeconfig (no offline or practice mode)
 
