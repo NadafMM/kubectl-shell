@@ -82,3 +82,21 @@ func TestRememberUndoDeploymentRevision(t *testing.T) {
 		t.Fatal(args)
 	}
 }
+
+func TestUndoGitOpsWarningAndStatefulSetSnapshot(t *testing.T) {
+	warn := UndoGitOpsWarning(UndoRecord{
+		Kind: "deployment", Name: "web", ManagedBy: "argocd", Release: "prod-web",
+	})
+	if !strings.Contains(warn, "managed by argocd (prod-web)") || !strings.Contains(warn, "Git") {
+		t.Fatalf("unexpected GitOps warning: %q", warn)
+	}
+	// StatefulSet without deployment revision should restore via cleaned apply snapshot.
+	sts := UndoRecord{
+		Kind: "statefulset", Name: "db", Namespace: "default",
+		Snapshot: json.RawMessage(`{"kind":"StatefulSet"}`),
+	}
+	args := RestoreArgs(sts)
+	if args[0] != "apply" {
+		t.Fatalf("expected apply restore for StatefulSet, got %v", args)
+	}
+}

@@ -218,7 +218,7 @@ func TestInspectPodsSkipsGeneralQuestion(t *testing.T) {
 	}
 }
 
-func TestInspectPodsIgnoresEleventh(t *testing.T) {
+func TestInspectPodsFindsEleventhUnhealthy(t *testing.T) {
 	calls := 0
 	healthy := func(name string) map[string]any {
 		return map[string]any{
@@ -258,6 +258,9 @@ func TestInspectPodsIgnoresEleventh(t *testing.T) {
 		Namespace: "default",
 		FetchJSON: func(args []string) (bool, any) {
 			calls++
+			if len(args) > 1 && args[1] == "events" {
+				return true, map[string]any{"items": []any{}}
+			}
 			return true, map[string]any{"items": items}
 		},
 		FetchText: func(args []string) string {
@@ -265,8 +268,8 @@ func TestInspectPodsIgnoresEleventh(t *testing.T) {
 			return ""
 		},
 	})
-	if found != nil || calls != 1 {
-		t.Fatalf("found=%v calls=%d", found, calls)
+	if found == nil || found.Pod != "eleventh" || found.Findings[0].Rule != FindingOOM {
+		t.Fatalf("expected eleventh OOM pod, got found=%#v calls=%d", found, calls)
 	}
 }
 
@@ -316,5 +319,137 @@ func TestHealthyPodNoFindings(t *testing.T) {
 	}), nil, nil)
 	if found != nil {
 		t.Fatal(found)
+	}
+}
+
+func TestTraceServicePortAndNetworkPolicyAndIngress(t *testing.T) {
+	svc := map[string]any{
+		"metadata": map[string]any{"name": "checkout", "namespace": "default"},
+		"spec": map[string]any{
+			"selector": map[string]any{"app": "checkout"},
+			"ports":    []any{map[string]any{"name": "http", "port": float64(80), "targetPort": float64(8080)}},
+		},
+	}
+	pod := map[string]any{
+		"metadata": map[string]any{"name": "checkout-0", "namespace": "default", "labels": map[string]any{"app": "checkout"}},
+		"spec": map[string]any{
+			"containers": []any{map[string]any{
+				"name":  "app",
+				"ports": []any{map[string]any{"containerPort": float64(3000)}},
+			}},
+		},
+		"status": map[string]any{
+			"phase":      "Running",
+			"conditions": []any{map[string]any{"type": "Ready", "status": "True"}},
+		},
+	}
+	ing := map[string]any{
+		"metadata": map[string]any{"name": "web-ing", "namespace": "default"},
+		"spec": map[string]any{
+			"rules": []any{map[string]any{
+				"http": map[string]any{"paths": []any{map[string]any{
+					"backend": map[string]any{"service": map[string]any{
+						"name": "checkout",
+						"port": map[string]any{"number": float64(8088)},
+					}},
+				}}},
+			}},
+		},
+	}
+	np := map[string]any{
+		"metadata": map[string]any{"name": "deny-all", "namespace": "default"},
+		"spec": map[string]any{
+			"podSelector": map[string]any{"matchLabels": map[string]any{"app": "checkout"}},
+			"policyTypes": []any{"Ingress"},
+		},
+	}
+	diag := traceServiceFromObjects(svc, "default", []dict{pod}, []dict{ing}, []dict{np}, nil, nil)
+	if diag == nil || len(diag.Findings) != 3 {
+		t.Fatalf("expected 3 findings (port, netpol, ingress), got %#v", diag)
+	}
+}
+
+func TestTraceRolloutQuotaAndPDB(t *testing.T) {
+	dep := map[string]any{
+		"metadata": map[string]any{"name": "web", "namespace": "default"},
+		"spec":     map[string]any{"selector": map[string]any{"matchLabels": map[string]any{"app": "web"}}},
+		"status": map[string]any{
+			"conditions": []any{map[string]any{
+				"type": "Progressing", "status": "False", "message": "ReplicaSet timed out progressing",
+			}},
+		},
+	}
+	quota := map[string]any{
+		"metadata": map[string]any{"name": "ns-quota"},
+		"status": map[string]any{
+			"hard": map[string]any{"pods": "10"},
+			"used": map[string]any{"pods": "10"},
+		},
+	}
+	pdb := map[string]any{
+		"metadata": map[string]any{"name": "web-pdb"},
+		"spec":     map[string]any{"selector": map[string]any{"matchLabels": map[string]any{"app": "web"}}},
+		"status":   map[string]any{"disruptionsAllowed": float64(0)},
+	}
+	diag := traceRolloutFromObjects(dep, "default", nil, nil, []dict{quota}, []dict{pdb}, nil, nil)
+	if diag == nil || len(diag.Findings) != 3 {
+		t.Fatalf("expected rollout+quota+pdb findings, got %#v", diag)
+	}
+}
+
+func TestTraceHTTPRoutePortAndDiagnoseNamespace(t *testing.T) {
+	svc := map[string]any{
+		"metadata": map[string]any{"name": "checkout", "namespace": "default"},
+		"spec": map[string]any{
+			"selector": map[string]any{"app": "checkout"},
+			"ports":    []any{map[string]any{"port": float64(80)}},
+		},
+	}
+	route := map[string]any{
+		"metadata": map[string]any{"name": "gw", "namespace": "default"},
+		"spec": map[string]any{
+			"rules": []any{map[string]any{
+				"backendRefs": []any{map[string]any{"kind": "Service", "name": "checkout", "port": float64(9090)}},
+			}},
+		},
+	}
+	diag := traceServiceWithRoutes(svc, "default", nil, nil, []dict{route}, nil, nil, nil)
+	if diag == nil || len(diag.Findings) < 2 {
+		t.Fatalf("expected service + httproute port findings, got %#v", diag)
+	}
+	hasRoute := false
+	for _, f := range diag.Findings {
+		if f.Rule == FindingHTTPRoute {
+			hasRoute = true
+		}
+	}
+	if !hasRoute {
+		t.Fatalf("expected FindingHTTPRoute in %#v", diag.Findings)
+	}
+
+	health := DiagnoseNamespace("default", func(args []string) (bool, any) {
+		switch args[1] {
+		case "pods":
+			return true, map[string]any{"items": []any{
+				checkout(map[string]any{
+					"phase": "Running",
+					"containerStatuses": []any{map[string]any{
+						"name": "app", "ready": false,
+						"lastState": map[string]any{"terminated": map[string]any{"reason": "OOMKilled", "exitCode": float64(137)}},
+					}},
+				}),
+			}}
+		case "services":
+			return true, map[string]any{"items": []any{svc}}
+		case "resourcequotas":
+			return true, map[string]any{"items": []any{}}
+		case "deployments":
+			return true, map[string]any{"items": []any{}}
+		default:
+			return true, map[string]any{"items": []any{}}
+		}
+	}, nil)
+	if len(health.FailingPods) != 1 || len(health.UnhealthySvcs) != 1 {
+		t.Fatalf("unexpected health sweep: %#v", health)
 	}
 }

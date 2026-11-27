@@ -8,11 +8,30 @@ import (
 )
 
 func resourceItems(filter func(kube.Resource) bool) []kube.Candidate {
+	return resourceItemsInCluster(kube.Cluster{}, filter)
+}
+
+func resourceItemsInCluster(cluster kube.Cluster, filter func(kube.Resource) bool) []kube.Candidate {
 	var out []kube.Candidate
+	seen := map[string]bool{}
 	for _, resource := range Resources {
 		if filter != nil && !filter(resource) {
 			continue
 		}
+		seen[resource.Name] = true
+		out = append(out, kube.Candidate{
+			Value:   resource.Name,
+			Detail:  resource.Detail,
+			Kind:    "resource",
+			Weight:  resource.Weight,
+			Aliases: append([]string{resource.Singular}, resource.Short...),
+		})
+	}
+	for _, resource := range cluster.DynamicResources {
+		if seen[resource.Name] || (filter != nil && !filter(resource)) {
+			continue
+		}
+		seen[resource.Name] = true
 		out = append(out, kube.Candidate{
 			Value:   resource.Name,
 			Detail:  resource.Detail,
@@ -225,10 +244,10 @@ func targets(scope Scope, cluster kube.Cluster, kinds []string) []kube.Candidate
 
 func afterResource(rest []string, scope Scope, cluster kube.Cluster, verb string) []kube.Candidate {
 	if len(rest) == 0 {
-		return resourceItems(nil)
+		return resourceItemsInCluster(cluster, nil)
 	}
 	if len(rest) == 1 {
-		resource, ok := ResolveResource(rest[0])
+		resource, ok := ResolveResourceInCluster(rest[0], cluster)
 		if !ok || strings.Contains(rest[0], "/") {
 			return FlagItems(verb)
 		}

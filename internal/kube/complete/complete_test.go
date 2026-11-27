@@ -174,3 +174,15 @@ func TestCompletionValueDropsMetacharacters(t *testing.T) {
 		}
 	}
 }
+
+func TestCompleteIncludesDynamicCRDs(t *testing.T) {
+	cluster := kube.InitialCluster()
+	cluster.DynamicResources = []kube.Resource{
+		{Name: "applications", Singular: "application", Kind: "application", Detail: "argoproj.io/v1alpha1", Weight: 14, Namespaced: true, Short: []string{"app"}},
+	}
+	line := "kubectl get app"
+	found := Complete(line, len(line), cluster)
+	if !hasValue(found.Candidates, "applications") {
+		t.Fatalf("expected CRD applications in %+v", found.Candidates)
+	}
+}

@@ -108,7 +108,7 @@ func cachePath() string {
 }
 
 func kubectl(args []string, timeout time.Duration) (int, string) {
-	name := KubectlBin()
+	name := kubectlBinary(false)
 	argv := append([]string{}, args...)
 	if script := os.Getenv("KUBE_SHELL_NODE_SCRIPT"); script != "" {
 		argv = append([]string{script}, args...)
@@ -152,13 +152,21 @@ func stderrFirstLine(stderr string) string {
 	return ""
 }
 
-// RunJson shells out to kubectl, parses stdout as JSON, and surfaces the first
-// stderr line (trimmed to 120 chars) on failure. Does not touch the live cache.
+// StderrFirstLine returns the first non-empty stderr line trimmed to 120 chars.
+func StderrFirstLine(stderr string) string {
+	return stderrFirstLine(stderr)
+}
+
+// RunJson queries Kubernetes JSON (via pooled client-go when available, falling
+// back to kubectl for non-get invocations or when KUBE_SHELL_KUBECTL hooks are set).
 func RunJson(args []string, timeoutMs int) KubectlJSONResult {
+	if direct, handled := RunJsonDirect(args, timeoutMs); handled {
+		return direct
+	}
 	if timeoutMs <= 0 {
 		timeoutMs = 3000
 	}
-	name := KubectlBin()
+	name := kubectlBinary(false)
 	argv := append([]string{}, args...)
 	if script := os.Getenv("KUBE_SHELL_NODE_SCRIPT"); script != "" {
 		argv = append([]string{script}, args...)
@@ -193,7 +201,7 @@ func RunJson(args []string, timeoutMs int) KubectlJSONResult {
 
 // CaptureLive runs kubectl with stdout and stderr collected.
 func CaptureLive(args []string) (code int, stdout, stderr string) {
-	name := KubectlBin()
+	name := kubectlBinary(false)
 	argv := append([]string{}, args...)
 	if script := os.Getenv("KUBE_SHELL_NODE_SCRIPT"); script != "" {
 		argv = append([]string{script}, args...)
@@ -213,6 +221,33 @@ func CaptureLive(args []string) (code int, stdout, stderr string) {
 		return exit.ExitCode(), outBuf.String(), errBuf.String()
 	}
 	return 1, outBuf.String(), errBuf.String()
+}
+
+// RunDiff runs kubectl with a short timeout for preflight diff checks.
+func RunDiff(args []string, timeoutMs int) (code int, stdout, stderr string) {
+	if timeoutMs <= 0 {
+		timeoutMs = 3000
+	}
+	name := kubectlBinary(false)
+	argv := append([]string{}, args...)
+	if script := os.Getenv("KUBE_SHELL_NODE_SCRIPT"); script != "" {
+		argv = append([]string{script}, args...)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMs)*time.Millisecond)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, argv...)
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	var err error
+	withChildInterrupt(func() { err = cmd.Run() })
+	if err == nil {
+		return 0, outBuf.String(), errBuf.String()
+	}
+	if exit, ok := err.(*exec.ExitError); ok {
+		return exit.ExitCode(), outBuf.String(), errBuf.String()
+	}
+	return 2, outBuf.String(), errBuf.String()
 }
 
 // RunLiveOptions controls how RunLive attaches stdio.
@@ -256,7 +291,7 @@ func RunLive(args []string, options RunLiveOptions) int {
 		}
 		return code
 	}
-	name := KubectlBin()
+	name := kubectlBinary(stdoutTTY)
 	argv := append([]string{}, args...)
 	if script := os.Getenv("KUBE_SHELL_NODE_SCRIPT"); script != "" {
 		argv = append([]string{script}, args...)
@@ -318,6 +353,9 @@ func ProbeLive() bool {
 		memory = &row
 		return true
 	}
+	if ProbeLiveDirect() {
+		return true
+	}
 	code, stdout := kubectl([]string{"get", "ns", "--request-timeout=4s", "-o", "name"}, 5*time.Second)
 	return code == 0 && strings.TrimSpace(stdout) != ""
 }
@@ -368,6 +406,7 @@ func writeCache(key string, cluster kube.Cluster) {
 func InvalidateLive() {
 	memory = nil
 	contextMemory = nil
+	ResetClientCache()
 	_ = os.Remove(cachePath())
 }
 
@@ -432,6 +471,15 @@ type configView struct {
 func contextCluster() (kube.Cluster, bool) {
 	if contextMemory != nil && time.Since(contextMemory.at) < time.Minute {
 		return contextMemory.cluster, true
+	}
+	if !UsingExecHook() {
+		if loaded, ok := LoadKubeconfigCluster(); ok {
+			contextMemory = &struct {
+				at      time.Time
+				cluster kube.Cluster
+			}{at: time.Now(), cluster: loaded}
+			return loaded, true
+		}
 	}
 	code, stdout := kubectl([]string{"config", "view", "-o", "json"}, 4*time.Second)
 	if code != 0 || strings.TrimSpace(stdout) == "" {
@@ -895,6 +943,33 @@ func fetchObjects(ctx []string, ns string, all bool) ([]kube.KObject, []kube.Eve
 	return objects, fetchEvents(ctx, ns, all)
 }
 
+// ContextSnapshot returns kubeconfig context and default namespace without
+// triggering a full cluster object snapshot. If a fresh completion cache hit
+// already exists on disk or in memory, it reuses that snapshot.
+func ContextSnapshot(engineLine string) (kube.Cluster, bool) {
+	base, ok := contextCluster()
+	if !ok {
+		return kube.Cluster{}, false
+	}
+	var tokens []string
+	for _, token := range parse.Tokenize(engineLine) {
+		tokens = append(tokens, parse.Unquote(token.Text))
+	}
+	if len(tokens) == 0 {
+		tokens = []string{"kubectl"}
+	}
+	scope := parse.ScopeOf(tokens, base)
+	keyNS := scope.NS
+	if scope.All {
+		keyNS = "*"
+	}
+	key := base.Current + "|" + scope.Context + "|" + keyNS
+	if cached, hit := readCache(key); hit {
+		return cached, true
+	}
+	return base, true
+}
+
 // LiveCluster builds a completion snapshot from kubeconfig and the API.
 // The second result is false when kubectl cannot describe the current context.
 func LiveCluster(engineLine string) (kube.Cluster, bool) {
@@ -917,6 +992,10 @@ func LiveCluster(engineLine string) (kube.Cluster, bool) {
 	key := base.Current + "|" + scope.Context + "|" + keyNS
 	if cached, hit := readCache(key); hit {
 		return cached, true
+	}
+	if direct, ok := FetchLiveClusterDirect(scope, base); ok {
+		writeCache(key, direct)
+		return direct, true
 	}
 	ctx := contextArgs(scope.Context, base.Current)
 	scoped := itemsOf(append(append([]string{}, ctx...), "get", "ns,nodes,pv,storageclasses.storage.k8s.io,priorityclasses.scheduling.k8s.io,customresourcedefinitions.apiextensions.k8s.io"))

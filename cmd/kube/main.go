@@ -10,6 +10,7 @@ import (
 	ksession "github.com/NadafMM/kubectl-shell/internal/kube/session"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -31,6 +32,7 @@ var version = "0.6.0"
 // runOptions lets tests supply confirm answers and stdio without a real TTY.
 type runOptions struct {
 	confirm     func(prompt string) bool
+	confirmText func(prompt string) string
 	stdinTTY    bool
 	stdin       io.Reader
 	runLive     func(args []string, options live.RunLiveOptions) int
@@ -49,8 +51,24 @@ type session struct {
 	stdinTTY       bool
 }
 
+func normalizePluginArgs(exe string, args []string) []string {
+	base := strings.TrimSuffix(strings.ToLower(filepath.Base(exe)), ".exe")
+	if base == "kubectl-blast" {
+		if len(args) == 0 {
+			return []string{"--help"}
+		}
+		switch args[0] {
+		case "plan", "--help", "-h", "--version", "-v":
+			return args
+		default:
+			return append([]string{"plan"}, args...)
+		}
+	}
+	return args
+}
+
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, runOptions{}))
+	os.Exit(run(normalizePluginArgs(os.Args[0], os.Args[1:]), os.Stdout, os.Stderr, runOptions{}))
 }
 
 func run(args []string, stdout, stderr io.Writer, opts runOptions) int {
@@ -109,7 +127,7 @@ func run(args []string, stdout, stderr io.Writer, opts runOptions) int {
 		policy: policy, stdinTTY: stdinTTY,
 	}
 	if flags.Record != "" {
-		cluster := clusterFor("kubectl")
+		cluster, _ := contextFor("kubectl")
 		ns := kube.NamespaceOf(cluster)
 		if ns == "" {
 			ns = "default"
@@ -155,12 +173,26 @@ func run(args []string, stdout, stderr io.Writer, opts runOptions) int {
 		}
 		fmt.Fprint(stdout, script)
 		return 0
+	case "hook":
+		shell := ""
+		if len(rest) > 1 {
+			shell = rest[1]
+		}
+		script := parse.HookScript(shell)
+		if script == "" {
+			fmt.Fprintln(stderr, "usage: kube hook bash|zsh|fish|powershell")
+			return 1
+		}
+		fmt.Fprint(stdout, script)
+		return 0
+	case "env":
+		return envCommand(rest[1:], stdout, stderr)
 	case "audit":
 		return auditCommand(rest[1:], stdout, stderr)
 	case "undo":
 		return undoCommand(rest[1:], host, stdout, stderr, opts)
 	case "mcp":
-		return mcpCommand(host, stdout, stderr, opts)
+		return mcpCommand(rest[1:], host, stdout, stderr, opts)
 	}
 
 	meta := parse.MetaOf(strings.Join(rest, " "))
@@ -213,6 +245,9 @@ Policy, plan-id, audit, undo, view, sandbox, and mcp apply. With no args it open
   kube undo list
   kube ns <name> | kube ctx <name>
   kube completion bash|zsh|fish|powershell
+  kube hook bash|zsh|fish|powershell
+  kube env [--ctx <name>] [--ns <name>] [--shell bash|zsh|fish|powershell]
+  kube mcp [--read-only] [--context <ctx>] [--namespace <ns>]
   kube __complete --line <line> --cursor <n> [--json]
 
 __complete fills resource names from kubectl when it answers, and keeps that
@@ -319,6 +354,10 @@ func clusterFor(line string) kube.Cluster {
 	return cluster
 }
 
+func contextFor(line string) (kube.Cluster, bool) {
+	return live.ContextSnapshot(line)
+}
+
 func engineLine(argv []string) (string, bool) {
 	parts := make([]string, 0, len(argv)+1)
 	parts = append(parts, "kubectl")
@@ -342,7 +381,10 @@ func planCommand(args []string, stdout, stderr io.Writer) int {
 	if rest[0] != "kubectl" && rest[0] != "k" {
 		line = "kubectl " + line
 	}
-	cluster := clusterFor(line)
+	cluster, ok := contextFor(line)
+	if !ok {
+		cluster = kube.Cluster{}
+	}
 	plan := kplan.PlanCommand(line, cluster)
 	argv := append([]string{}, rest...)
 	if len(argv) > 0 && (argv[0] == "kubectl" || argv[0] == "k") {
@@ -397,7 +439,10 @@ func planCommand(args []string, stdout, stderr io.Writer) int {
 }
 
 func wantsBlast(plan kube.Plan) bool {
-	return plan.Verb == "delete" || plan.Verb == "drain" || (plan.Verb == "scale" && plan.Risk == "high")
+	if plan.Verb == "delete" || plan.Verb == "drain" || (plan.Verb == "scale" && plan.Risk == "high") {
+		return true
+	}
+	return (plan.Verb == "apply" || plan.Verb == "replace" || plan.Verb == "patch") && plan.Mutating && plan.Risk == "high"
 }
 
 func liveBlast(plan kube.Plan, argv []string) kplan.Blast {
@@ -409,7 +454,14 @@ func liveBlast(plan kube.Plan, argv []string) kplan.Blast {
 		}
 		return live.RunJson(args, int(left))
 	}
-	return kplan.BlastRadius(plan, argv, getJSON, func() int64 { return time.Now().UnixMilli() })
+	runDiff := func(args []string) (int, string, string) {
+		left := kplan.BlastBudgetMS - (time.Now().UnixMilli() - started)
+		if left <= 0 {
+			return 2, "", "timed out"
+		}
+		return live.RunDiff(args, int(left))
+	}
+	return kplan.BlastRadiusWithOptions(plan, argv, getJSON, func() int64 { return time.Now().UnixMilli() }, kplan.BlastOptions{RunDiff: runDiff})
 }
 
 func askCommand(args []string, stdout, stderr io.Writer) int {
@@ -449,24 +501,18 @@ func auditCommand(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func runKubectl(argv []string, host session, stdout, stderr io.Writer, opts runOptions) int {
-	probe := opts.probeLive
-	if probe == nil {
-		probe = live.ProbeLive
-	}
-	if !probe() {
-		fmt.Fprintln(stderr, "kubectl could not reach a cluster. kube only runs against a reachable cluster.")
-		return 1
-	}
-	line, ok := engineLine(argv)
-	if !ok {
-		fmt.Fprintln(stderr, "cannot pass an argument that contains both quote styles")
-		return 1
-	}
+func execGuardedKubectl(
+	plan kube.Plan,
+	argv []string,
+	policyCtx string,
+	cluster kube.Cluster,
+	host session,
+	stderr io.Writer,
+	opts runOptions,
+	inheritStdin bool,
+) (code int, refusal string, ran bool) {
 	started := time.Now()
 	auditID := ksession.NewAuditId()
-	cluster := clusterFor(line)
-	plan := kplan.PlanCommand(line, cluster)
 	actor := "human-cli"
 	if host.agent {
 		actor = "agent-cli"
@@ -487,16 +533,16 @@ func runKubectl(argv []string, host session, stdout, stderr io.Writer, opts runO
 	auth := kpolicy.Authorize(kpolicy.AuthRequest{
 		Plan: plan, Argv: argv, Policy: host.policy, Agent: host.agent,
 		Yes: host.yes, ConfirmContext: host.confirmContext, PlanID: host.planID,
-		PolicyContext: cluster.Current,
+		PolicyContext: policyCtx,
 	}, func(planID string, expect kpolicy.PlanExpect) (bool, string) {
 		return kpolicy.ConsumePlan(planID, expect, time.Now())
 	})
 	blastText := ""
 	if !auth.OK {
 		writeAudit(auth.AuditDecision, "none", nil)
-		fmt.Fprintln(stdout, auth.Refuse)
-		return 1
+		return 1, auth.Refuse, false
 	}
+	approver := auth.Approver
 	if auth.RequireConfirm {
 		text := kplan.FormatPlan(plan)
 		if wantsBlast(plan) {
@@ -506,19 +552,35 @@ func runKubectl(argv []string, host session, stdout, stderr io.Writer, opts runO
 			}
 		}
 		fmt.Fprintln(stderr, text)
-		confirm := opts.confirm
-		if confirm == nil {
-			confirm = defaultConfirm(stderr)
-		}
-		if !confirm("Run it? [y/N] ") {
-			writeAudit("refused-confirm", "none", nil)
-			fmt.Fprintln(stdout, "not run")
-			return 1
+		if auth.Rule.Confirm == "typed" {
+			ctxName := kpolicy.EffectiveContext(plan.Context, policyCtx)
+			var ans string
+			switch {
+			case opts.confirmText != nil:
+				ans = opts.confirmText("Type context name (" + ctxName + ") to run: ")
+			case opts.confirm != nil:
+				ans = ""
+			default:
+				ans = defaultConfirmText(stderr)("Type context name (" + ctxName + ") to run: ")
+			}
+			if strings.TrimSpace(ans) != ctxName || ctxName == "" {
+				writeAudit("refused-confirm", "none", nil)
+				return 1, "not run", false
+			}
+			approver = "typed-context"
+		} else {
+			confirm := opts.confirm
+			if confirm == nil {
+				confirm = defaultConfirm(stderr)
+			}
+			if !confirm("Run it? [y/N] ") {
+				writeAudit("refused-confirm", "none", nil)
+				return 1, "not run", false
+			}
 		}
 	} else if warn := redact.SensitiveReadWarning(argv); warn != "" {
 		fmt.Fprintln(stderr, warn)
 	}
-	approver := auth.Approver
 	dryRun := false
 	for _, token := range argv {
 		if token == "--dry-run" || strings.HasPrefix(token, "--dry-run=") {
@@ -533,7 +595,7 @@ func runKubectl(argv []string, host session, stdout, stderr io.Writer, opts runO
 	if runner == nil {
 		runner = live.RunLive
 	}
-	code := runner(argv, live.RunLiveOptions{InheritStdin: true})
+	code = runner(argv, live.RunLiveOptions{InheritStdin: inheritStdin})
 	decision := "executed"
 	if dryRun {
 		decision = "dry-run"
@@ -550,20 +612,144 @@ func runKubectl(argv []string, host session, stdout, stderr io.Writer, opts runO
 		entry.Summary = plan.Summary
 	}
 	ksession.NoteRan(entry)
-	return code
+	return code, "", true
 }
 
-func mcpCommand(host session, stdout, stderr io.Writer, opts runOptions) int {
-	probe := opts.probeLive
-	if probe == nil {
-		probe = live.ProbeLive
-	}
-	if !probe() {
+func runKubectl(argv []string, host session, stdout, stderr io.Writer, opts runOptions) int {
+	if opts.probeLive != nil && !opts.probeLive() {
 		fmt.Fprintln(stderr, "kubectl could not reach a cluster. kube only runs against a reachable cluster.")
 		return 1
 	}
-	cluster, ok := live.LiveCluster("kubectl")
+	line, ok := engineLine(argv)
 	if !ok {
+		fmt.Fprintln(stderr, "cannot pass an argument that contains both quote styles")
+		return 1
+	}
+	cluster, ok := contextFor(line)
+	if !ok {
+		if opts.probeLive == nil {
+			fmt.Fprintln(stderr, "kubectl could not reach a cluster. kube only runs against a reachable cluster.")
+			return 1
+		}
+		cluster = kube.Cluster{}
+	}
+	plan := kplan.PlanCommand(line, cluster)
+	code, refusal, ran := execGuardedKubectl(plan, argv, cluster.Current, cluster, host, stderr, opts, true)
+	if !ran && refusal != "" {
+		fmt.Fprintln(stdout, refusal)
+	}
+	return code
+}
+
+func envCommand(args []string, stdout, stderr io.Writer) int {
+	var ctxName, nsName, shell, sessionID string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--ctx" || arg == "--context":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "kube env: "+arg+" needs a value")
+				return 1
+			}
+			i++
+			ctxName = args[i]
+		case strings.HasPrefix(arg, "--ctx="):
+			ctxName = arg[len("--ctx="):]
+		case strings.HasPrefix(arg, "--context="):
+			ctxName = arg[len("--context="):]
+		case arg == "--ns" || arg == "--namespace":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "kube env: "+arg+" needs a value")
+				return 1
+			}
+			i++
+			nsName = args[i]
+		case strings.HasPrefix(arg, "--ns="):
+			nsName = arg[len("--ns="):]
+		case strings.HasPrefix(arg, "--namespace="):
+			nsName = arg[len("--namespace="):]
+		case arg == "--shell":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "kube env: --shell needs a value")
+				return 1
+			}
+			i++
+			shell = args[i]
+		case strings.HasPrefix(arg, "--shell="):
+			shell = arg[len("--shell="):]
+		case arg == "--session":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "kube env: --session needs a value")
+				return 1
+			}
+			i++
+			sessionID = args[i]
+		case strings.HasPrefix(arg, "--session="):
+			sessionID = arg[len("--session="):]
+		default:
+			fmt.Fprintln(stderr, "usage: kube env [--ctx <name>] [--ns <name>] [--shell bash|zsh|fish|powershell] [--session <id>]")
+			return 1
+		}
+	}
+	basePath := os.Getenv("KUBE_SHELL_BASE_KUBECONFIG")
+	if basePath == "" {
+		basePath = os.Getenv("KUBECONFIG")
+	}
+	scopedPath, _, _, err := ksession.WriteScopedKubeconfig(ctxName, nsName, sessionID, time.Now())
+	if err != nil {
+		fmt.Fprintln(stderr, "kube env:", err)
+		return 1
+	}
+	if shell == "" {
+		shell = "bash"
+	}
+	snippet := ksession.FormatScopeEnv(shell, scopedPath, basePath)
+	if snippet == "" {
+		fmt.Fprintln(stderr, "usage: kube env --shell bash|zsh|fish|powershell")
+		return 1
+	}
+	fmt.Fprint(stdout, snippet)
+	return 0
+}
+
+func mcpCommand(args []string, host session, stdout, stderr io.Writer, opts runOptions) int {
+	var mcpOpts mcp.McpOptions
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--read-only":
+			mcpOpts.ReadOnly = true
+		case arg == "--context":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "usage: kube mcp [--read-only] [--context <ctx>] [--namespace <ns>]")
+				return 1
+			}
+			i++
+			mcpOpts.Context = args[i]
+		case strings.HasPrefix(arg, "--context="):
+			mcpOpts.Context = arg[len("--context="):]
+		case arg == "--namespace" || arg == "-n":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "usage: kube mcp [--read-only] [--context <ctx>] [--namespace <ns>]")
+				return 1
+			}
+			i++
+			mcpOpts.Namespace = args[i]
+		case strings.HasPrefix(arg, "--namespace="):
+			mcpOpts.Namespace = arg[len("--namespace="):]
+		case strings.HasPrefix(arg, "-n="):
+			mcpOpts.Namespace = arg[len("-n="):]
+		default:
+			fmt.Fprintln(stderr, "usage: kube mcp [--read-only] [--context <ctx>] [--namespace <ns>]")
+			return 1
+		}
+	}
+	if opts.probeLive != nil && !opts.probeLive() {
+		fmt.Fprintln(stderr, "kubectl could not reach a cluster. kube only runs against a reachable cluster.")
+		return 1
+	}
+	cluster, ok := contextFor("kubectl")
+	if !ok && opts.probeLive == nil {
 		fmt.Fprintln(stderr, "kubectl could not reach a cluster. kube only runs against a reachable cluster.")
 		return 1
 	}
@@ -571,7 +757,13 @@ func mcpCommand(host session, stdout, stderr io.Writer, opts runOptions) int {
 	if stdin == nil {
 		stdin = os.Stdin
 	}
-	if err := mcp.ServeMcp(cluster, version, stdin, stdout); err != nil {
+	clusterFn := func() kube.Cluster {
+		if fresh, fok := contextFor("kubectl"); fok {
+			return fresh
+		}
+		return cluster
+	}
+	if err := mcp.ServeMcpOptions(clusterFn, version, stdin, stdout, mcpOpts); err != nil {
 		fmt.Fprintln(stderr, err.Error())
 		return 1
 	}
@@ -695,6 +887,9 @@ func undoCommand(args []string, host session, stdout, stderr io.Writer, opts run
 			if record.Refused != "" {
 				state = "not restorable"
 			}
+			if record.ManagedBy != "" {
+				state += " [managed by " + record.ManagedBy + "]"
+			}
 			lines = append(lines, fmt.Sprintf("%s  %s/%s  %s  %s", record.ID, record.Kind, record.Name, record.Namespace, state))
 		}
 		if len(lines) == 0 {
@@ -716,6 +911,9 @@ func undoCommand(args []string, host session, stdout, stderr io.Writer, opts run
 	if refusal := undo.UndoRefusal(record); refusal != "" {
 		fmt.Fprintln(stdout, refusal)
 		return 1
+	}
+	if warn := undo.UndoGitOpsWarning(record); warn != "" {
+		fmt.Fprintln(stderr, warn)
 	}
 	preview := "apply saved " + record.Kind + "/" + record.Name
 	if record.Revision != "" {
@@ -752,14 +950,27 @@ func undoCommand(args []string, host session, stdout, stderr io.Writer, opts run
 
 func defaultConfirm(stderr io.Writer) func(string) bool {
 	return func(prompt string) bool {
-		tty, err := kube.OpenTTY()
+		in, out, closeTTY, err := kube.OpenTTYPrompt(stderr)
 		if err != nil {
 			fmt.Fprintf(stderr, "\nkube: could not read the answer (%v); not running it.\n", err)
 			return false
 		}
-		if tty != os.Stdin {
-			defer tty.Close()
+		defer closeTTY()
+		return kpolicy.ConfirmLine(out, in, prompt)
+	}
+}
+
+func defaultConfirmText(stderr io.Writer) func(string) string {
+	return func(prompt string) string {
+		in, out, closeTTY, err := kube.OpenTTYPrompt(stderr)
+		if err != nil {
+			fmt.Fprintf(stderr, "\nkube: could not read the answer (%v); not running it.\n", err)
+			return ""
 		}
-		return kpolicy.ConfirmLine(tty, tty, prompt)
+		defer closeTTY()
+		_, _ = io.WriteString(out, prompt)
+		return kpolicy.ReadExactLine(in, func(text string) {
+			_, _ = io.WriteString(stderr, text)
+		})
 	}
 }

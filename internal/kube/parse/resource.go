@@ -18,6 +18,10 @@ func init() {
 }
 
 func ResolveResource(token string) (kube.Resource, bool) {
+	return ResolveResourceInCluster(token, kube.Cluster{})
+}
+
+func ResolveResourceInCluster(token string, cluster kube.Cluster) (kube.Resource, bool) {
 	raw := strings.ToLower(strings.Split(token, "/")[0])
 	name := raw
 	if mapped, ok := singular[raw]; ok {
@@ -25,6 +29,11 @@ func ResolveResource(token string) (kube.Resource, bool) {
 	}
 	for _, resource := range Resources {
 		if resource.Name == name || kube.ContainsString(resource.Short, raw) || resource.Singular == raw {
+			return resource, true
+		}
+	}
+	for _, resource := range cluster.DynamicResources {
+		if strings.ToLower(resource.Name) == raw || strings.ToLower(resource.Singular) == raw || kube.ContainsString(resource.Short, raw) {
 			return resource, true
 		}
 	}

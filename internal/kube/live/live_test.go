@@ -330,3 +330,17 @@ func TestRunLiveRedactsPipedSecretJSON(t *testing.T) {
 		}
 	})
 }
+
+func TestContextSnapshotAvoidsObjectAPIs(t *testing.T) {
+	withFake(t, func(log string) {
+		cluster, ok := ContextSnapshot("kubectl get pods")
+		if !ok || cluster.Current != "minikube" {
+			t.Fatalf("ok=%v cluster=%+v", ok, cluster)
+		}
+		for _, line := range logLines(log) {
+			if strings.Contains(line, `"get"`) {
+				t.Fatalf("ContextSnapshot should not call kubectl get: %s", line)
+			}
+		}
+	})
+}

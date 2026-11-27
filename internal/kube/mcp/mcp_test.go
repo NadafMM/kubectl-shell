@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"github.com/NadafMM/kubectl-shell/internal/kube"
@@ -165,5 +166,144 @@ func TestHandleMcpPlanAndExecute(t *testing.T) {
 	}
 	if !strings.Contains(string(audit), `"actor":"mcp"`) {
 		t.Fatal(string(audit))
+	}
+}
+
+func TestServeMcpStreamsNDJSONAndSchemas(t *testing.T) {
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	cluster := kube.Cluster{Current: "minikube", Contexts: []kube.Context{{Name: "minikube", Namespace: "default"}}}
+	done := make(chan error, 1)
+	go func() {
+		done <- ServeMcpLive(func() kube.Cluster { return cluster }, "0.6.0", inR, outW)
+		_ = outW.Close()
+	}()
+
+	reader := bufio.NewReader(outR)
+	_, _ = io.WriteString(inW, `{"jsonrpc":"2.0","id":1,"method":"initialize"}`+"\n")
+	line1, err := reader.ReadString('\n')
+	if err != nil || !strings.Contains(line1, `"protocolVersion":"2024-11-05"`) {
+		t.Fatalf("init err=%v line=%q", err, line1)
+	}
+	_, _ = io.WriteString(inW, `{"jsonrpc":"2.0","method":"notifications/initialized"}`+"\n")
+	_, _ = io.WriteString(inW, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`+"\n")
+	line2, err := reader.ReadString('\n')
+	if err != nil || !strings.Contains(line2, `"inputSchema"`) {
+		t.Fatalf("tools/list err=%v line=%q", err, line2)
+	}
+	// Verify context switch reflects live in the same streaming session.
+	cluster.Current = "staging"
+	cluster.Contexts = append(cluster.Contexts, kube.Context{Name: "staging", Namespace: "payments"})
+	_, _ = io.WriteString(inW, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"kube_context","arguments":{}}}`+"\n")
+	line3, err := reader.ReadString('\n')
+	if err != nil || !strings.Contains(line3, "staging") || !strings.Contains(line3, "payments") {
+		t.Fatalf("context err=%v line=%q", err, line3)
+	}
+	_ = inW.Close()
+	if serr := <-done; serr != nil {
+		t.Fatal(serr)
+	}
+}
+
+func TestDistillMcpJSONStripsManagedFieldsAndLastApplied(t *testing.T) {
+	raw := `{"kind":"Deployment","metadata":{"name":"web","managedFields":[{"manager":"kube"}],"annotations":{"kubectl.kubernetes.io/last-applied-configuration":"{}","keep":"yes"}}}`
+	out := DistillMcpJSON(raw)
+	if strings.Contains(out, "managedFields") || strings.Contains(out, "last-applied-configuration") {
+		t.Fatalf("noisy fields leaked: %s", out)
+	}
+	if !strings.Contains(out, `"keep":"yes"`) {
+		t.Fatalf("kept annotation dropped: %s", out)
+	}
+}
+
+func TestMcpDiagnoseTool(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("KUBE_SHELL_KUBECTL", "node")
+	t.Setenv("KUBE_SHELL_NODE_SCRIPT", filepath.Join("..", "..", "..", "scripts", "fake-kubectl.mjs"))
+	t.Setenv("KUBE_FAKE_FIXTURE", "up")
+	t.Setenv("KUBE_FAKE_DIAG", "oom")
+
+	cluster := kube.Cluster{Current: "minikube", Contexts: []kube.Context{{Name: "minikube", Namespace: "default"}}}
+	reply := HandleMcpRpc(McpRpc{
+		JSONRPC: "2.0",
+		ID:      9,
+		Method:  "tools/call",
+		Params: &struct {
+			Name      string         `json:"name"`
+			Arguments map[string]any `json:"arguments"`
+		}{Name: "kube_diagnose", Arguments: map[string]any{"question": "why is pod/checkout crashing"}},
+	}, cluster, "0.6.0")
+	raw, _ := json.Marshal(reply)
+	if !strings.Contains(string(raw), "OOMKilled") || strings.Contains(string(raw), `"isError":true`) {
+		t.Fatalf("unexpected diagnose reply: %s", raw)
+	}
+}
+
+func TestMcpReadOnlyAndScopePinningAndNamespaceHealth(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("KUBE_SHELL_KUBECTL", "node")
+	t.Setenv("KUBE_SHELL_NODE_SCRIPT", filepath.Join("..", "..", "..", "scripts", "fake-kubectl.mjs"))
+	t.Setenv("KUBE_FAKE_FIXTURE", "up")
+	t.Setenv("KUBE_FAKE_DIAG", "oom")
+
+	cluster := kube.Cluster{
+		Current: "minikube",
+		Contexts: []kube.Context{
+			{Name: "minikube", Namespace: "default"},
+			{Name: "prod-eu", Namespace: "payments"},
+		},
+	}
+	ro := McpOptions{ReadOnly: true, Context: "minikube", Namespace: "default"}
+
+	ctxReply := HandleMcpRpcWithOptions(McpRpc{
+		JSONRPC: "2.0", ID: 1, Method: "tools/call",
+		Params: &struct {
+			Name      string         `json:"name"`
+			Arguments map[string]any `json:"arguments"`
+		}{Name: "kube_context", Arguments: map[string]any{}},
+	}, cluster, "0.6.0", ro)
+	raw, _ := json.Marshal(ctxReply)
+	if !strings.Contains(string(raw), `\"readOnly\":true`) {
+		t.Fatalf("expected readOnly in context: %s", raw)
+	}
+
+	execMut := HandleMcpRpcWithOptions(McpRpc{
+		JSONRPC: "2.0", ID: 2, Method: "tools/call",
+		Params: &struct {
+			Name      string         `json:"name"`
+			Arguments map[string]any `json:"arguments"`
+		}{Name: "kube_execute", Arguments: map[string]any{"command": "delete pod worker-0", "planId": "fake"}},
+	}, cluster, "0.6.0", ro)
+	raw, _ = json.Marshal(execMut)
+	if !strings.Contains(string(raw), "--read-only") || !strings.Contains(string(raw), `"isError":true`) {
+		t.Fatalf("expected read-only refusal: %s", raw)
+	}
+
+	pinRefusal := HandleMcpRpcWithOptions(McpRpc{
+		JSONRPC: "2.0", ID: 3, Method: "tools/call",
+		Params: &struct {
+			Name      string         `json:"name"`
+			Arguments map[string]any `json:"arguments"`
+		}{Name: "kube_execute", Arguments: map[string]any{"command": "get pods -n other"}},
+	}, cluster, "0.6.0", ro)
+	raw, _ = json.Marshal(pinRefusal)
+	if !strings.Contains(string(raw), "pinned to namespace default") {
+		t.Fatalf("expected namespace pin refusal: %s", raw)
+	}
+
+	healthReply := HandleMcpRpcWithOptions(McpRpc{
+		JSONRPC: "2.0", ID: 4, Method: "tools/call",
+		Params: &struct {
+			Name      string         `json:"name"`
+			Arguments map[string]any `json:"arguments"`
+		}{Name: "kube_namespace_health", Arguments: map[string]any{}},
+	}, cluster, "0.6.0", ro)
+	raw, _ = json.Marshal(healthReply)
+	if !strings.Contains(string(raw), "OOMKilled") || strings.Contains(string(raw), `"isError":true`) {
+		t.Fatalf("unexpected health reply: %s", raw)
 	}
 }

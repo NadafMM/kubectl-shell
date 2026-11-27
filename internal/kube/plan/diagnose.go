@@ -772,7 +772,8 @@ type InspectPodsInput struct {
 	FetchText  FetchText
 }
 
-// InspectPods fetches at most one named pod, or the first 10 pods, and ranks causes.
+// InspectPods fetches at most one named pod, or ranks all failing pods (top 5)
+// in the namespace and returns the highest-priority diagnosis.
 func InspectPods(input InspectPodsInput) *Diagnosis {
 	if !healthQuestion.MatchString(input.Question) {
 		return nil
@@ -794,10 +795,19 @@ func InspectPods(input InspectPodsInput) *Diagnosis {
 		return nil
 	}
 	items := itemsOfJSON(parsed)
-	if len(items) > 10 {
-		items = items[:10]
-	}
+	var failing []any
 	for _, pod := range items {
+		if candidatePod(pod) {
+			failing = append(failing, pod)
+		}
+	}
+	sort.SliceStable(failing, func(i, j int) bool {
+		return podSeverity(asDict(failing[i])) > podSeverity(asDict(failing[j]))
+	})
+	if len(failing) > 5 {
+		failing = failing[:5]
+	}
+	for _, pod := range failing {
 		if found := diagnoseFetched(pod, ns, input.FetchJSON, input.FetchText); found != nil {
 			return found
 		}
@@ -805,7 +815,34 @@ func InspectPods(input InspectPodsInput) *Diagnosis {
 	return nil
 }
 
-// AskAdvice prefers live diagnosis, then falls back to static Advise.
+func podSeverity(pod dict) int {
+	if pod == nil {
+		return 0
+	}
+	score := 0
+	if isPending(pod) {
+		score += 10
+	}
+	for _, status := range statusesOf(pod) {
+		if isOOM(terminated(status)) {
+			score += 100
+		}
+		if reason := asStr(waiting(status)["reason"]); reason != "" {
+			switch reason {
+			case "CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull", "CreateContainerConfigError":
+				score += 80
+			default:
+				score += 30
+			}
+		}
+		if restarts, ok := asNum(status["restartCount"]); ok {
+			score += int(restarts)
+		}
+	}
+	return score
+}
+
+// AskAdvice prefers live multi-hop or pod diagnosis, then falls back to static Advise.
 func AskAdvice(question string, cluster kube.Cluster, ctx []string) Advice {
 	var known []string
 	for _, item := range cluster.Objects {
@@ -828,7 +865,7 @@ func AskAdvice(question string, cluster kube.Cluster, ctx []string) Advice {
 		out := append([]string{}, args...)
 		return append(out, ctx...)
 	}
-	diagnosis := InspectPods(InspectPodsInput{
+	input := InspectPodsInput{
 		Question:   question,
 		Namespace:  ns,
 		KnownNames: known,
@@ -847,8 +884,41 @@ func AskAdvice(question string, cluster kube.Cluster, ctx []string) Advice {
 			_, stdout, _ := live.CaptureLive(withCtx(args))
 			return stdout
 		},
-	})
-	if diagnosis != nil {
+	}
+	explicitPod := regexp.MustCompile(`(?i)\bpod[/\s]+[a-z0-9]`).MatchString(question)
+	if !explicitPod {
+		svcName := serviceNameFrom(question, cluster)
+		if svcName != "" || serviceQuestionRe.MatchString(question) {
+			traceInput := input
+			if svcName != "" {
+				for _, item := range cluster.Objects {
+					if item.Kind == "service" && item.Name == svcName && item.NS != "" {
+						traceInput.Namespace = item.NS
+						break
+					}
+				}
+			}
+			if diagnosis := traceService(traceInput, svcName); diagnosis != nil {
+				return AdviceFrom(*diagnosis)
+			}
+		}
+		depName := deploymentNameFrom(question, cluster)
+		if depName != "" || rolloutQuestionRe.MatchString(question) {
+			traceInput := input
+			if depName != "" {
+				for _, item := range cluster.Objects {
+					if item.Kind == "deployment" && item.Name == depName && item.NS != "" {
+						traceInput.Namespace = item.NS
+						break
+					}
+				}
+			}
+			if diagnosis := traceRollout(traceInput, depName); diagnosis != nil {
+				return AdviceFrom(*diagnosis)
+			}
+		}
+	}
+	if diagnosis := InspectPods(input); diagnosis != nil {
 		return AdviceFrom(*diagnosis)
 	}
 	return Advise(question, cluster)
