@@ -186,3 +186,13 @@ func TestCompleteIncludesDynamicCRDs(t *testing.T) {
 		t.Fatalf("expected CRD applications in %+v", found.Candidates)
 	}
 }
+
+func TestEditDistanceBoundsLongInputs(t *testing.T) {
+	if got := editDistance("deploments", "deployments"); got != 1 {
+		t.Fatalf("expected edit distance 1, got %d", got)
+	}
+	long := strings.Repeat("a", maxEditDistanceLen+10)
+	if got := editDistance(long, long); got <= 2 {
+		t.Fatalf("expected bounded rejection for oversized inputs, got %d", got)
+	}
+}
