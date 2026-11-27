@@ -610,3 +610,13 @@ func TestMcpReadOnlyFlagViaCLI(t *testing.T) {
 		t.Fatalf("code=%d out=%q err=%q", code, out.String(), errBuf.String())
 	}
 }
+
+func TestAskNamespaceHealthViaCLI(t *testing.T) {
+	withFakeEnv(t)
+	t.Setenv("KUBE_FAKE_DIAG", "oom")
+	var out, errBuf bytes.Buffer
+	code := run([]string{"ask", "--json", "check namespace"}, &out, &errBuf, runOptions{})
+	if code != 0 || !strings.Contains(out.String(), "OOMKilled") || !strings.Contains(out.String(), "checkout") {
+		t.Fatalf("code=%d out=%q err=%q", code, out.String(), errBuf.String())
+	}
+}

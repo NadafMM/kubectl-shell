@@ -4,6 +4,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/NadafMM/kubectl-shell/internal/kube"
 )
 
 func checkout(status any, spec ...any) map[string]any {
@@ -451,5 +453,92 @@ func TestTraceHTTPRoutePortAndDiagnoseNamespace(t *testing.T) {
 	}, nil)
 	if len(health.FailingPods) != 1 || len(health.UnhealthySvcs) != 1 {
 		t.Fatalf("unexpected health sweep: %#v", health)
+	}
+}
+
+func TestAskNamespaceHealthQuestion(t *testing.T) {
+	for _, positive := range []string{
+		"health",
+		"health check",
+		"namespace health",
+		"check namespace",
+		"check ns payments",
+		"namespace health in prod",
+		"-n payments health",
+	} {
+		if !isNamespaceHealthQuestion(positive) {
+			t.Fatalf("expected %q to match namespace health routing", positive)
+		}
+	}
+	for _, negative := range []string{
+		"why are pods crashing",
+		"why is pod/api unhealthy",
+		"which namespace",
+		"how do I port-forward",
+		"why is svc/checkout 503",
+	} {
+		if isNamespaceHealthQuestion(negative) {
+			t.Fatalf("did not expect %q to match namespace health routing", negative)
+		}
+	}
+
+	var seenNS string
+	cluster := kube.Cluster{}
+	input := InspectPodsInput{
+		Namespace: "default",
+		FetchJSON: func(args []string) (bool, any) {
+			for i := 0; i+1 < len(args); i++ {
+				if args[i] == "-n" {
+					seenNS = args[i+1]
+				}
+			}
+			switch args[1] {
+			case "pods":
+				return true, map[string]any{"items": []any{
+					checkout(map[string]any{
+						"phase": "Running",
+						"containerStatuses": []any{map[string]any{
+							"name": "app", "ready": false,
+							"lastState": map[string]any{"terminated": map[string]any{"reason": "OOMKilled", "exitCode": float64(137)}},
+						}},
+					}),
+				}}
+			case "resourcequotas":
+				return true, map[string]any{"items": []any{
+					map[string]any{
+						"metadata": map[string]any{"name": "compute-quota", "namespace": "payments"},
+						"status": map[string]any{
+							"hard": map[string]any{"pods": "10"},
+							"used": map[string]any{"pods": "10"},
+						},
+					},
+				}}
+			default:
+				return true, map[string]any{"items": []any{}}
+			}
+		},
+	}
+	advice := askAdviceWithInput("check namespace payments", cluster, "", input)
+	if seenNS != "payments" {
+		t.Fatalf("expected namespace payments to be queried, got %q", seenNS)
+	}
+	if !strings.Contains(advice.Why, "pod/checkout") || !strings.Contains(advice.Why, "OOMKilled") || !strings.Contains(advice.Why, "resourcequota") {
+		t.Fatalf("unexpected health advice: %#v", advice)
+	}
+
+	healthy := askAdviceWithInput("health", kube.Cluster{}, "", InspectPodsInput{
+		Namespace: "staging",
+		FetchJSON: func([]string) (bool, any) { return true, map[string]any{"items": []any{}} },
+	})
+	if !strings.Contains(healthy.Why, "staging looks healthy") {
+		t.Fatalf("expected healthy summary for staging, got %#v", healthy)
+	}
+
+	unreachable := askAdviceWithInput("health", cluster, "", InspectPodsInput{
+		Namespace: "default",
+		FetchJSON: func([]string) (bool, any) { return false, nil },
+	})
+	if strings.Contains(unreachable.Why, "looks healthy") {
+		t.Fatalf("must not claim healthy when cluster is unreachable: %#v", unreachable)
 	}
 }

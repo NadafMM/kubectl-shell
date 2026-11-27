@@ -650,25 +650,28 @@ func PodNameFrom(question string, knownNames []string) string {
 	return ""
 }
 
+func appendUniqueStrings(dst []string, items ...string) []string {
+	for _, item := range items {
+		seen := false
+		for _, existing := range dst {
+			if existing == item {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			dst = append(dst, item)
+		}
+	}
+	return dst
+}
+
 // AdviceFrom turns a diagnosis into Advice, including findings for --json.
 func AdviceFrom(diagnosis Diagnosis) Advice {
 	var commands []string
-	for _, finding := range diagnosis.Findings {
-		for _, command := range finding.Commands {
-			found := false
-			for _, existing := range commands {
-				if existing == command {
-					found = true
-					break
-				}
-			}
-			if !found {
-				commands = append(commands, command)
-			}
-		}
-	}
 	var whyParts []string
 	for _, finding := range diagnosis.Findings {
+		commands = appendUniqueStrings(commands, finding.Commands...)
 		whyParts = append(whyParts, finding.Cause)
 	}
 	return Advice{
@@ -885,7 +888,33 @@ func AskAdvice(question string, cluster kube.Cluster, ctx []string) Advice {
 			return stdout
 		},
 	}
+	return askAdviceWithInput(question, cluster, named, input)
+}
+
+func askAdviceWithInput(question string, cluster kube.Cluster, named string, input InspectPodsInput) Advice {
+	ns := input.Namespace
+	if ns == "" {
+		ns = kube.NamespaceOf(cluster)
+	}
 	explicitPod := regexp.MustCompile(`(?i)\bpod[/\s]+[a-z0-9]`).MatchString(question)
+	if !explicitPod && named == "" && isNamespaceHealthQuestion(question) {
+		targetNS := namespaceTargetFrom(question, ns)
+		reachable := false
+		trackedFetch := func(args []string) (bool, any) {
+			if input.FetchJSON == nil {
+				return false, nil
+			}
+			ok, parsed := input.FetchJSON(args)
+			if ok {
+				reachable = true
+			}
+			return ok, parsed
+		}
+		health := DiagnoseNamespace(targetNS, trackedFetch, input.FetchText)
+		if reachable {
+			return AdviceFromNamespaceHealth(health)
+		}
+	}
 	if !explicitPod {
 		svcName := serviceNameFrom(question, cluster)
 		if svcName != "" || serviceQuestionRe.MatchString(question) {

@@ -20,9 +20,95 @@ const (
 )
 
 var (
-	serviceQuestionRe = regexp.MustCompile(`(?i)\b(svc|service|endpoints?|ingress|httproute|503|502|traffic|reach|connect)\b|\bsvc/[a-z0-9][-a-z0-9.]*|\bservice/[a-z0-9][-a-z0-9.]*`)
-	rolloutQuestionRe = regexp.MustCompile(`(?i)\b(deploy(ment)?|rollout|stuck|progress(ing)?|replicas?|sts|statefulset)\b|\bdeploy(ment)?/[a-z0-9][-a-z0-9.]*|\bsts/[a-z0-9][-a-z0-9.]*`)
+	serviceQuestionRe     = regexp.MustCompile(`(?i)\b(svc|service|endpoints?|ingress|httproute|503|502|traffic|reach|connect)\b|\bsvc/[a-z0-9][-a-z0-9.]*|\bservice/[a-z0-9][-a-z0-9.]*`)
+	rolloutQuestionRe     = regexp.MustCompile(`(?i)\b(deploy(ment)?|rollout|stuck|progress(ing)?|replicas?|sts|statefulset)\b|\bdeploy(ment)?/[a-z0-9][-a-z0-9.]*|\bsts/[a-z0-9][-a-z0-9.]*`)
+	namespaceQuestionRe   = regexp.MustCompile(`(?i)^\s*(?:cluster|namespace|ns)?\s*health(?:\s+(?:check|sweep))?\s*$|(?i)\b(?:namespace|ns)\s+(?:health|check|sweep)\b|(?i)\b(?:check|inspect|diagnose|audit)\s+(?:the\s+)?(?:namespace|ns)\b|(?i)\bhealth\s+(?:of|in)\s+(?:the\s+)?(?:namespace|ns)\b`)
+	namespaceTargetFlagRe = regexp.MustCompile(`(?i)(?:^|\s)(?:-n|--namespace)(?:=|\s+)([a-z0-9][-a-z0-9]*)`)
+	namespaceTargetWordRe = regexp.MustCompile(`(?i)\b(?:namespace|ns)\s+([a-z0-9][-a-z0-9]*)`)
+	namespaceTargetPrepRe = regexp.MustCompile(`(?i)\b(?:namespace|ns)\s+(?:health|check|sweep)\s+(?:for|in|of)\s+([a-z0-9][-a-z0-9]*)`)
+	namespaceStop         = map[string]bool{
+		"health": true, "check": true, "sweep": true, "status": true,
+		"namespace": true, "ns": true, "cluster": true, "default": false,
+	}
 )
+
+func isNamespaceHealthQuestion(question string) bool {
+	stripped := strings.TrimSpace(namespaceTargetFlagRe.ReplaceAllString(question, " "))
+	return namespaceQuestionRe.MatchString(stripped)
+}
+
+func namespaceTargetFrom(question, fallback string) string {
+	if m := namespaceTargetFlagRe.FindStringSubmatch(question); len(m) == 2 {
+		return m[1]
+	}
+	if m := namespaceTargetWordRe.FindStringSubmatch(question); len(m) == 2 {
+		low := strings.ToLower(m[1])
+		if !askStop[low] && !namespaceStop[low] {
+			return m[1]
+		}
+	}
+	if m := namespaceTargetPrepRe.FindStringSubmatch(question); len(m) == 2 {
+		low := strings.ToLower(m[1])
+		if !askStop[low] && !namespaceStop[low] {
+			return m[1]
+		}
+	}
+	if fallback != "" {
+		return fallback
+	}
+	return "default"
+}
+
+// AdviceFromNamespaceHealth summarizes a NamespaceHealth sweep into Advice.
+func AdviceFromNamespaceHealth(h NamespaceHealth) Advice {
+	ns := h.Namespace
+	if ns == "" {
+		ns = "default"
+	}
+	var whyParts []string
+	var commands []string
+	var findings []Finding
+
+	for _, q := range h.ExhaustedQuotas {
+		cause := "resourcequota " + q
+		whyParts = append(whyParts, cause)
+		f := Finding{Rule: FindingQuota, Cause: cause, Commands: []string{"describe resourcequota -n " + ns}}
+		findings = append(findings, f)
+		commands = appendUniqueStrings(commands, f.Commands...)
+	}
+	appendGroup := func(prefix string, diags []Diagnosis) {
+		for _, d := range diags {
+			label := d.Pod
+			if label != "" && prefix != "" && !strings.Contains(label, "/") {
+				label = prefix + "/" + label
+			}
+			for _, f := range d.Findings {
+				line := f.Cause
+				if label != "" && !strings.Contains(line, label) {
+					line = label + ": " + line
+				}
+				whyParts = append(whyParts, line)
+				findings = append(findings, f)
+				commands = appendUniqueStrings(commands, f.Commands...)
+			}
+		}
+	}
+	appendGroup("service", h.UnhealthySvcs)
+	appendGroup("deployment", h.StuckDeployments)
+	appendGroup("pod", h.FailingPods)
+
+	if len(whyParts) == 0 {
+		return Advice{
+			Why:      "namespace " + ns + " looks healthy (no failing pods, unhealthy services, stuck rollouts, or exhausted quotas)",
+			Commands: []string{"get pods,svc,deploy -n " + ns},
+		}
+	}
+	return Advice{
+		Why:      strings.Join(whyParts, "\n"),
+		Commands: commands,
+		Findings: findings,
+	}
+}
 
 func serviceNameFrom(question string, cluster kube.Cluster) string {
 	if m := regexp.MustCompile(`(?i)\b(?:svc|service)/([a-z0-9][-a-z0-9.]*)`).FindStringSubmatch(question); len(m) == 2 {

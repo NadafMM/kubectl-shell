@@ -52,9 +52,10 @@ kube view               # full-screen list (plain table without a TTY)
 kube plan delete pod x  # name matching pods and Services that would lose Ready pods
 kube ask "why is checkout crashing"
 kube ask "why is svc/checkout returning 503"
+kube ask "check namespace"
 ```
 
-**`ask`** inspects failing pods (scanning past the first 10 pods and ranking by severity), events, and previous logs, and traces multi-hop Service/Ingress/Gateway `HTTPRoute`/`NetworkPolicy`/port failures and stuck Deployment rollouts (`ResourceQuota`/PDB) using local rules. It makes no AI-model calls of its own.
+**`ask`** inspects failing pods (scanning past the first 10 pods and ranking by severity), events, and previous logs, traces multi-hop Service/Ingress/Gateway `HTTPRoute`/`NetworkPolicy`/port failures and stuck Deployment rollouts (`ResourceQuota`/PDB), and runs namespace health sweeps (`kube ask "check namespace"`) using local rules. It makes no AI-model calls of its own.
 
 **Shell meta commands:** `live`, `reset`, `view` / `ui`, `plan`, `ask` / `?`, `help`, `exit`.
 
