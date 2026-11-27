@@ -14,7 +14,6 @@ concurrency:
 
 jobs:
   # Branch protection still requires a job named "coverage".
-  # TypeScript coverage was removed with the CLI; this job only keeps the check green.
   coverage:
     runs-on: ubuntu-latest
     steps:
@@ -25,5 +24,10 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
-      - name: Go tests (coverage check placeholder)
-        run: go test ./cmd/kube ./internal/kube
+      - name: Go tests with coverage
+        # Cover packages that have tests; the parent internal/kube package is
+        # types-only (no _test.go) and can trip a missing covdata tool on merge.
+        run: |
+          pkgs=$(go list ./cmd/kube ./internal/kube/... | grep -v 'internal/kube$')
+          go test $pkgs -coverprofile=coverage.out -covermode=atomic
+          go tool cover -func=coverage.out | tail -1
