@@ -1,7 +1,7 @@
 {
   "name": "kubectl-shell",
   "description": "Terminal kubectl shell with live Tab completion, plan/ask helpers, and a full-screen resource view.",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "engines": {
     "node": ">=22"
   },
