@@ -27,7 +27,7 @@ import (
 
 // version is set at link time via -X main.version=… (see Makefile / scripts/packaging).
 // The fallback matches ./VERSION for plain `go build` / `go test`.
-var version = "0.6.0"
+var version = "0.7.0"
 
 // runOptions lets tests supply confirm answers and stdio without a real TTY.
 type runOptions struct {
