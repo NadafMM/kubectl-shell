@@ -118,28 +118,31 @@ func containsFold(items []string, part string) bool {
 	return false
 }
 
+const maxEditDistanceLen = 256
+
 func editDistance(a, b string) int {
+	if len(a) > maxEditDistanceLen || len(b) > maxEditDistanceLen {
+		return 9
+	}
 	if abs(len(a)-len(b)) > 2 {
 		return 9
 	}
-	dp := make([][]int, len(a)+1)
-	for i := range dp {
-		dp[i] = make([]int, len(b)+1)
-		dp[i][0] = i
-	}
+	var prev, curr [maxEditDistanceLen + 1]int
 	for j := 0; j <= len(b); j++ {
-		dp[0][j] = j
+		prev[j] = j
 	}
 	for i := 1; i <= len(a); i++ {
+		curr[0] = i
 		for j := 1; j <= len(b); j++ {
 			cost := 1
 			if a[i-1] == b[j-1] {
 				cost = 0
 			}
-			dp[i][j] = min(dp[i-1][j]+1, dp[i][j-1]+1, dp[i-1][j-1]+cost)
+			curr[j] = min(prev[j]+1, curr[j-1]+1, prev[j-1]+cost)
 		}
+		prev = curr
 	}
-	return dp[len(a)][len(b)]
+	return prev[len(b)]
 }
 
 func abs(n int) int {

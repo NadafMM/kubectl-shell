@@ -82,6 +82,46 @@ func ConfirmLine(w io.Writer, r io.Reader, prompt string) bool {
 	})
 }
 
+// ReadExactLine reads one line from r and returns trimmed text. A read error returns "".
+func ReadExactLine(r io.Reader, warn func(string)) string {
+	var bufRaw []byte
+	b := make([]byte, 1)
+	for {
+		n, err := r.Read(b)
+		if n > 0 {
+			if b[0] == '\n' || b[0] == '\r' {
+				break
+			}
+			bufRaw = append(bufRaw, b[0])
+		}
+		if err != nil {
+			if len(bufRaw) == 0 {
+				if warn != nil {
+					warn("\nkube: could not read the answer (" + err.Error() + "); not running it.\n")
+				}
+				return ""
+			}
+			break
+		}
+		if n == 0 {
+			break
+		}
+	}
+	return strings.TrimSpace(string(bufRaw))
+}
+
+// ConfirmExact writes prompt to w and returns true only when the trimmed answer equals expected.
+func ConfirmExact(w io.Writer, r io.Reader, prompt, expected string) bool {
+	if expected == "" {
+		return false
+	}
+	_, _ = io.WriteString(w, prompt)
+	got := ReadExactLine(r, func(text string) {
+		_, _ = io.WriteString(w, text)
+	})
+	return got == expected
+}
+
 // ScanConfirm is a simpler line reader used when a full line is available.
 func ScanConfirm(r io.Reader) bool {
 	scanner := bufio.NewScanner(r)

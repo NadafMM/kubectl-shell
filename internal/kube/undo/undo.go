@@ -32,6 +32,8 @@ type UndoRecord struct {
 	Namespace string          `json:"namespace"`
 	Context   string          `json:"context"`
 	Revision  string          `json:"revision,omitempty"`
+	ManagedBy string          `json:"managedBy,omitempty"`
+	Release   string          `json:"release,omitempty"`
 	Snapshot  json.RawMessage `json:"snapshot,omitempty"`
 	Refused   string          `json:"refused,omitempty"`
 }
@@ -153,8 +155,11 @@ func RememberUndo(argv []string, cluster kube.Cluster, id string, now time.Time)
 		return
 	}
 	base.Snapshot = cleaned
-	if annotations, ok := meta["annotations"].(map[string]any); ok && undoWorkloads[kind] {
-		if revision, ok := annotations["deployment.kubernetes.io/revision"].(string); ok && revision != "" {
+	labels := toStringMap(meta["labels"])
+	annotations := toStringMap(meta["annotations"])
+	base.ManagedBy, base.Release = kube.DetectGitOpsFromMeta(labels, annotations)
+	if kind == "deployment" {
+		if revision := annotations["deployment.kubernetes.io/revision"]; revision != "" {
 			base.Revision = revision
 		}
 	}
@@ -214,6 +219,32 @@ func UndoRefusal(record UndoRecord) string {
 		return "kube undo cannot restore a Pod. A controller recreates pods."
 	}
 	return ""
+}
+
+// UndoGitOpsWarning returns a drift warning when the saved resource is owned by Argo CD, Flux, or Helm.
+func UndoGitOpsWarning(record UndoRecord) string {
+	if record.ManagedBy == "" {
+		return ""
+	}
+	rel := ""
+	if record.Release != "" {
+		rel = " (" + record.Release + ")"
+	}
+	return "warning: " + record.Kind + "/" + record.Name + " is managed by " + record.ManagedBy + rel + "; manual undo may drift or be reverted — prefer reverting in Git"
+}
+
+func toStringMap(v any) map[string]string {
+	raw, ok := v.(map[string]any)
+	if !ok {
+		return nil
+	}
+	out := make(map[string]string, len(raw))
+	for k, val := range raw {
+		if s, ok := val.(string); ok {
+			out[k] = s
+		}
+	}
+	return out
 }
 
 // RestoreArgs builds the kubectl argv that undoes a record.

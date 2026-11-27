@@ -499,3 +499,114 @@ func TestMcpInitializeViaCLI(t *testing.T) {
 		t.Fatalf("code %d out %q err %q", code, out.String(), errBuf.String())
 	}
 }
+
+func TestTypedConfirmInteractiveRejectsYAndAcceptsContext(t *testing.T) {
+	withFakeEnv(t)
+	policyPath := filepath.Join(os.Getenv("HOME"), "policy.json")
+	if err := os.WriteFile(policyPath, []byte(`{"contexts":{"minikube":{"confirm":"typed"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errBuf bytes.Buffer
+	ran := false
+	code := run([]string{"--policy", policyPath, "delete", "pod", "checkout"}, &out, &errBuf, runOptions{
+		probeLive:   func() bool { return true },
+		confirmText: func(string) string { return "y" },
+		runLive: func([]string, live.RunLiveOptions) int {
+			ran = true
+			return 0
+		},
+	})
+	if code != 1 || ran || !strings.Contains(out.String(), "not run") {
+		t.Fatalf("expected y refusal: code=%d ran=%v out=%q", code, ran, out.String())
+	}
+
+	out.Reset()
+	errBuf.Reset()
+	code = run([]string{"--policy", policyPath, "delete", "pod", "checkout"}, &out, &errBuf, runOptions{
+		probeLive:   func() bool { return true },
+		confirmText: func(string) string { return "minikube" },
+		runLive: func([]string, live.RunLiveOptions) int {
+			ran = true
+			return 0
+		},
+	})
+	if code != 0 || !ran {
+		t.Fatalf("expected typed context pass: code=%d ran=%v out=%q err=%q", code, ran, out.String(), errBuf.String())
+	}
+}
+
+func TestRunKubectlSkipsLiveClusterGetsOnRead(t *testing.T) {
+	withFakeEnv(t)
+	logPath := filepath.Join(os.Getenv("HOME"), "kubectl.log")
+	_ = os.Remove(logPath)
+	var out, errBuf bytes.Buffer
+	code := run([]string{"get", "pods"}, &out, &errBuf, runOptions{
+		runLive: func(args []string, _ live.RunLiveOptions) int { return 0 },
+	})
+	if code != 0 {
+		t.Fatalf("code %d err=%q", code, errBuf.String())
+	}
+	raw, _ := os.ReadFile(logPath)
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.Contains(line, `"get"`) {
+			t.Fatalf("unexpected preflight kubectl get during read passthrough: %s", line)
+		}
+	}
+}
+
+func TestHookScriptsAndPluginArgs(t *testing.T) {
+	for _, shell := range []string{"bash", "zsh", "fish", "powershell", "pwsh"} {
+		var out, errBuf bytes.Buffer
+		if code := run([]string{"hook", shell}, &out, &errBuf, runOptions{}); code != 0 || !strings.Contains(out.String(), "kubectl") {
+			t.Fatalf("shell=%s code=%d out=%q err=%q", shell, code, out.String(), errBuf.String())
+		}
+	}
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"hook"}, &out, &errBuf, runOptions{}); code != 1 {
+		t.Fatalf("expected usage error, got code=%d", code)
+	}
+	got := normalizePluginArgs("/usr/local/bin/kubectl-blast", []string{"delete", "deploy/web"})
+	if len(got) != 3 || got[0] != "plan" || got[1] != "delete" {
+		t.Fatalf("unexpected blast plugin args: %v", got)
+	}
+	gotWin := normalizePluginArgs(`C:\bin\kubectl-blast.exe`, []string{"--version"})
+	if len(gotWin) != 1 || gotWin[0] != "--version" {
+		t.Fatalf("unexpected blast version args: %v", gotWin)
+	}
+	out.Reset()
+	errBuf.Reset()
+	if code := run([]string{"hook", "zsh"}, &out, &errBuf, runOptions{}); code != 0 || !strings.Contains(out.String(), "kubecolor") || !strings.Contains(out.String(), "kube env") {
+		t.Fatalf("expected kubecolor and kube env in zsh hook: %q", out.String())
+	}
+}
+
+func TestEnvCommandWritesScopedKubeconfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	cfg := filepath.Join(home, "cfg")
+	raw := "apiVersion: v1\nkind: Config\ncurrent-context: dev\ncontexts:\n  - name: dev\n    context:\n      cluster: c\n      user: u\n      namespace: default\nclusters:\n  - name: c\n    cluster:\n      server: https://127.0.0.1:6443\nusers:\n  - name: u\n    user:\n      token: t\n"
+	if err := os.WriteFile(cfg, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KUBECONFIG", cfg)
+	t.Setenv("KUBE_SHELL_BASE_KUBECONFIG", "")
+	var out, errBuf bytes.Buffer
+	code := run([]string{"env", "--ctx", "dev", "--ns", "payments", "--shell", "zsh", "--session", "t1"}, &out, &errBuf, runOptions{})
+	if code != 0 || !strings.Contains(out.String(), "export KUBECONFIG=") || !strings.Contains(out.String(), "t1.yaml") {
+		t.Fatalf("code=%d out=%q err=%q", code, out.String(), errBuf.String())
+	}
+}
+
+func TestMcpReadOnlyFlagViaCLI(t *testing.T) {
+	withFakeEnv(t)
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"kube_execute","arguments":{"command":"delete pod checkout","planId":"abc"}}}` + "\n"
+	var out, errBuf bytes.Buffer
+	code := run([]string{"mcp", "--read-only"}, &out, &errBuf, runOptions{
+		stdin:     strings.NewReader(req),
+		probeLive: func() bool { return true },
+	})
+	if code != 0 || !strings.Contains(out.String(), "--read-only") {
+		t.Fatalf("code=%d out=%q err=%q", code, out.String(), errBuf.String())
+	}
+}

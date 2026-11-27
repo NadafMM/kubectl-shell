@@ -62,3 +62,13 @@ func TestConfirmLine(t *testing.T) {
 		t.Fatal(out.String())
 	}
 }
+
+func TestConfirmExact(t *testing.T) {
+	var out bytes.Buffer
+	if ConfirmExact(&out, strings.NewReader("y\n"), "Type prod-eu: ", "prod-eu") {
+		t.Fatal("expected y to be rejected")
+	}
+	if !ConfirmExact(&out, strings.NewReader("  prod-eu \n"), "Type prod-eu: ", "prod-eu") {
+		t.Fatal("expected exact context name to pass")
+	}
+}

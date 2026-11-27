@@ -174,3 +174,25 @@ func TestCompletionValueDropsMetacharacters(t *testing.T) {
 		}
 	}
 }
+
+func TestCompleteIncludesDynamicCRDs(t *testing.T) {
+	cluster := kube.InitialCluster()
+	cluster.DynamicResources = []kube.Resource{
+		{Name: "applications", Singular: "application", Kind: "application", Detail: "argoproj.io/v1alpha1", Weight: 14, Namespaced: true, Short: []string{"app"}},
+	}
+	line := "kubectl get app"
+	found := Complete(line, len(line), cluster)
+	if !hasValue(found.Candidates, "applications") {
+		t.Fatalf("expected CRD applications in %+v", found.Candidates)
+	}
+}
+
+func TestEditDistanceBoundsLongInputs(t *testing.T) {
+	if got := editDistance("deploments", "deployments"); got != 1 {
+		t.Fatalf("expected edit distance 1, got %d", got)
+	}
+	long := strings.Repeat("a", maxEditDistanceLen+10)
+	if got := editDistance(long, long); got <= 2 {
+		t.Fatalf("expected bounded rejection for oversized inputs, got %d", got)
+	}
+}

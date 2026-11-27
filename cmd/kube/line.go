@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"github.com/NadafMM/kubectl-shell/internal/kube/parse"
 	kpolicy "github.com/NadafMM/kubectl-shell/internal/kube/policy"
-	"github.com/NadafMM/kubectl-shell/internal/kube/redact"
 	ksession "github.com/NadafMM/kubectl-shell/internal/kube/session"
 	"io"
 	"os"
@@ -224,6 +223,9 @@ func undoLine(trimmed string, cluster kube.Cluster, host lineHost) lineResult {
 			if record.Refused != "" {
 				state = "not restorable"
 			}
+			if record.ManagedBy != "" {
+				state += " [managed by " + record.ManagedBy + "]"
+			}
 			lines = append(lines, fmt.Sprintf("%s  %s/%s  %s  %s", record.ID, record.Kind, record.Name, record.Namespace, state))
 		}
 		if len(lines) == 0 {
@@ -237,6 +239,9 @@ func undoLine(trimmed string, cluster kube.Cluster, host lineHost) lineResult {
 	}
 	if refusal := undo.UndoRefusal(record); refusal != "" {
 		return lineResult{output: refusal, ok: false, cluster: cluster}
+	}
+	if warn := undo.UndoGitOpsWarning(record); warn != "" {
+		fmt.Fprintln(host.stderr, warn)
 	}
 	preview := "apply saved " + record.Kind + "/" + record.Name
 	if record.Revision != "" {
@@ -370,94 +375,15 @@ func planLine(trimmed string, cluster kube.Cluster, scope *ksession.ShellScope) 
 
 func executeEngine(engineLine string, cluster kube.Cluster, scope *ksession.ShellScope, host lineHost) lineResult {
 	planned := kplan.PlanCommand(engineLine, cluster)
-	started := time.Now()
-	auditID := ksession.NewAuditId()
 	argv := ksession.CommandArgs(engineLine, scope)
 	scopeCtx := ""
 	if scope != nil {
 		scopeCtx = scope.Context
 	}
 	policyCtx := kpolicy.EffectiveContext(cluster.Current, scopeCtx)
-	actor := "human-cli"
-	if host.agent {
-		actor = "agent-cli"
-	} else if host.stdinTTY {
-		actor = "human-tty"
+	code, refusal, ran := execGuardedKubectl(planned, argv, policyCtx, cluster, host.session, host.stderr, host.opts, !host.stdinTTY)
+	if !ran && refusal != "" {
+		return lineResult{output: refusal, ok: false, cluster: cluster}
 	}
-	writeAudit := func(decision, approver string, exitCode *int) {
-		if !ksession.AuditEnabled(host.policy) {
-			return
-		}
-		ksession.AppendAudit(ksession.AuditEntry{
-			ID: auditID, Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
-			Actor: actor, Context: planned.Context, Namespace: planned.Namespace,
-			Argv: redact.RedactArgv(argv), Risk: planned.Risk, Decision: decision,
-			Approver: approver, ExitCode: exitCode, DurationMs: int(time.Since(started).Milliseconds()),
-		}, 0)
-	}
-	auth := kpolicy.Authorize(kpolicy.AuthRequest{
-		Plan: planned, Argv: argv, Policy: host.policy, Agent: host.agent,
-		Yes: host.yes, ConfirmContext: host.confirmContext, PlanID: host.planID,
-		PolicyContext: policyCtx,
-	}, func(planID string, expect kpolicy.PlanExpect) (bool, string) {
-		return kpolicy.ConsumePlan(planID, expect, time.Now())
-	})
-	blastText := ""
-	if !auth.OK {
-		writeAudit(auth.AuditDecision, "none", nil)
-		return lineResult{output: auth.Refuse, ok: false, cluster: cluster}
-	}
-	if auth.RequireConfirm {
-		text := kplan.FormatPlan(planned)
-		if wantsBlast(planned) {
-			if extra := kplan.FormatBlast(liveBlast(planned, argv)); extra != "" {
-				blastText = extra
-				text += "\n" + extra
-			}
-		}
-		fmt.Fprintln(host.stderr, text)
-		confirm := host.confirm
-		if confirm == nil {
-			confirm = defaultConfirm(host.stderr)
-		}
-		if !confirm("Run it? [y/N] ") {
-			writeAudit("refused-confirm", "none", nil)
-			return lineResult{output: "not run", ok: false, cluster: cluster}
-		}
-	} else if warn := redact.SensitiveReadWarning(argv); warn != "" {
-		fmt.Fprintln(host.stderr, warn)
-	}
-	approver := auth.Approver
-	dryRun := false
-	for _, token := range argv {
-		if token == "--dry-run" || strings.HasPrefix(token, "--dry-run=") {
-			dryRun = true
-			break
-		}
-	}
-	if !dryRun {
-		undo.RememberUndo(argv, cluster, auditID, time.Now())
-	}
-	runner := host.opts.runLive
-	if runner == nil {
-		runner = live.RunLive
-	}
-	code := runner(argv, live.RunLiveOptions{InheritStdin: !host.stdinTTY})
-	decision := "executed"
-	if dryRun {
-		decision = "dry-run"
-	}
-	writeAudit(decision, approver, &code)
-	entry := ksession.RunbookEntry{
-		Decision: decision, Verb: planned.Verb,
-		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
-		Context:   planned.Context, Namespace: planned.Namespace,
-		Command: ksession.RedactCommand(argv), Risk: planned.Risk, ExitCode: &code,
-		Blast: blastText,
-	}
-	if planned.Mutating {
-		entry.Summary = planned.Summary
-	}
-	ksession.NoteRan(entry)
 	return lineResult{ok: code == 0, cluster: live.ApplyLiveContext(cluster)}
 }

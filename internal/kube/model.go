@@ -1,5 +1,7 @@
 package kube
 
+import "strings"
+
 // Plan describes what a kubectl line will touch without running it.
 type Plan struct {
 	Command       string   `json:"command"`
@@ -70,13 +72,14 @@ type Event struct {
 }
 
 type Cluster struct {
-	Current    string      `json:"current"`
-	Contexts   []Context   `json:"contexts"`
-	Namespaces []Namespace `json:"namespaces"`
-	Nodes      []Node      `json:"nodes"`
-	PVs        []PV        `json:"pvs"`
-	Events     []Event     `json:"events"`
-	Objects    []KObject   `json:"objects"`
+	Current          string      `json:"current"`
+	Contexts         []Context   `json:"contexts"`
+	Namespaces       []Namespace `json:"namespaces"`
+	Nodes            []Node      `json:"nodes"`
+	PVs              []PV        `json:"pvs"`
+	Events           []Event     `json:"events"`
+	Objects          []KObject   `json:"objects"`
+	DynamicResources []Resource  `json:"dynamicResources,omitempty"`
 }
 
 type Resource struct {
@@ -153,4 +156,24 @@ func ContainsString(items []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// DetectGitOpsFromMeta identifies Argo CD, Flux, or Helm ownership from object metadata.
+func DetectGitOpsFromMeta(labels, annotations map[string]string) (manager, release string) {
+	switch {
+	case annotations["argocd.argoproj.io/tracking-id"] != "":
+		return "argocd", strings.Split(annotations["argocd.argoproj.io/tracking-id"], ":")[0]
+	case labels["argocd.argoproj.io/instance"] != "":
+		return "argocd", labels["argocd.argoproj.io/instance"]
+	case labels["kustomize.toolkit.fluxcd.io/name"] != "":
+		return "flux", labels["kustomize.toolkit.fluxcd.io/name"]
+	case labels["helm.toolkit.fluxcd.io/name"] != "":
+		return "flux", labels["helm.toolkit.fluxcd.io/name"]
+	case annotations["meta.helm.sh/release-name"] != "":
+		return "helm", annotations["meta.helm.sh/release-name"]
+	case strings.EqualFold(labels["app.kubernetes.io/managed-by"], "Helm"):
+		return "helm", labels["app.kubernetes.io/instance"]
+	default:
+		return "", ""
+	}
 }

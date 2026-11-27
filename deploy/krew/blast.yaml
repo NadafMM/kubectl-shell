@@ -1,0 +1,48 @@
+apiVersion: krew.googlecontainertools.github.com/v1alpha2
+kind: Plugin
+metadata:
+  name: blast
+spec:
+  version: v0.6.0
+  homepage: https://github.com/NadafMM/kubectl-shell
+  shortDescription: Preview blast radius and GitOps drift before kubectl mutations
+  description: |
+    Analyzes Kubernetes delete, drain, scale-to-zero, apply, and patch commands
+    for impacted Services, Ingresses, Gateway HTTPRoutes, PVCs, PodDisruptionBudgets,
+    HPAs, node drain capacity, and GitOps drift before running mutations.
+  platforms:
+    - selector:
+        matchLabels:
+          os: linux
+          arch: amd64
+      uri: https://github.com/NadafMM/kubectl-shell/releases/download/v0.6.0/kubectl-shell-0.6.0-linux-amd64.tar.gz
+      sha256: REPLACE_WITH_RELEASE_SHA256
+      bin: kube
+    - selector:
+        matchLabels:
+          os: linux
+          arch: arm64
+      uri: https://github.com/NadafMM/kubectl-shell/releases/download/v0.6.0/kubectl-shell-0.6.0-linux-arm64.tar.gz
+      sha256: REPLACE_WITH_RELEASE_SHA256
+      bin: kube
+    - selector:
+        matchLabels:
+          os: darwin
+          arch: amd64
+      uri: https://github.com/NadafMM/kubectl-shell/releases/download/v0.6.0/kubectl-shell-0.6.0-darwin-amd64.tar.gz
+      sha256: REPLACE_WITH_RELEASE_SHA256
+      bin: kube
+    - selector:
+        matchLabels:
+          os: darwin
+          arch: arm64
+      uri: https://github.com/NadafMM/kubectl-shell/releases/download/v0.6.0/kubectl-shell-0.6.0-darwin-arm64.tar.gz
+      sha256: REPLACE_WITH_RELEASE_SHA256
+      bin: kube
+    - selector:
+        matchLabels:
+          os: windows
+          arch: amd64
+      uri: https://github.com/NadafMM/kubectl-shell/releases/download/v0.6.0/kubectl-shell-0.6.0-windows-amd64.tar.gz
+      sha256: REPLACE_WITH_RELEASE_SHA256
+      bin: kube.exe

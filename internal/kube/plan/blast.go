@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	// BlastBudgetMS is the wall-clock budget for blast-radius kubectl calls.
@@ -63,18 +64,24 @@ type BlastDryRun struct {
 
 // Blast is the blast-radius report for a mutating plan.
 type Blast struct {
-	Status      string         `json:"status"`
-	Reason      string         `json:"reason,omitempty"`
-	Controllers []BlastObject  `json:"controllers,omitempty"`
-	Objects     []BlastObject  `json:"objects"`
-	ObjectCount int            `json:"objectCount"`
-	Services    []BlastService `json:"services"`
-	ServiceNote string         `json:"serviceNote,omitempty"`
-	PDBs        []BlastPDB     `json:"pdbs,omitempty"`
-	PDBNote     string         `json:"pdbNote,omitempty"`
-	HPAs        []BlastHPA     `json:"hpas,omitempty"`
-	Owners      []BlastOwner   `json:"owners,omitempty"`
-	DryRun      *BlastDryRun   `json:"dryRun,omitempty"`
+	Status      string           `json:"status"`
+	Reason      string           `json:"reason,omitempty"`
+	Controllers []BlastObject    `json:"controllers,omitempty"`
+	Objects     []BlastObject    `json:"objects"`
+	ObjectCount int              `json:"objectCount"`
+	Services    []BlastService   `json:"services"`
+	ServiceNote string           `json:"serviceNote,omitempty"`
+	PDBs        []BlastPDB       `json:"pdbs,omitempty"`
+	PDBNote     string           `json:"pdbNote,omitempty"`
+	HPAs        []BlastHPA       `json:"hpas,omitempty"`
+	Owners      []BlastOwner     `json:"owners,omitempty"`
+	Ingresses   []BlastIngress   `json:"ingresses,omitempty"`
+	PVCs        []BlastPVC       `json:"pvcs,omitempty"`
+	Drain       *BlastDrain      `json:"drain,omitempty"`
+	ManagedBy   []BlastManagedBy `json:"managedBy,omitempty"`
+	Warnings    []string         `json:"warnings,omitempty"`
+	Diff        *BlastDiff       `json:"diff,omitempty"`
+	DryRun      *BlastDryRun     `json:"dryRun,omitempty"`
 
 	groups    []countGroup `json:"-"`
 	kind      string       `json:"-"`
@@ -92,12 +99,59 @@ type countGroup struct {
 	count     int
 }
 
+type podTemplateContainer struct {
+	Name      string `json:"name"`
+	Resources *struct {
+		Requests map[string]string `json:"requests"`
+	} `json:"resources"`
+	EnvFrom []struct {
+		ConfigMapRef *struct {
+			Name string `json:"name"`
+		} `json:"configMapRef"`
+		SecretRef *struct {
+			Name string `json:"name"`
+		} `json:"secretRef"`
+	} `json:"envFrom"`
+	Env []struct {
+		ValueFrom *struct {
+			ConfigMapKeyRef *struct {
+				Name string `json:"name"`
+			} `json:"configMapKeyRef"`
+			SecretKeyRef *struct {
+				Name string `json:"name"`
+			} `json:"secretKeyRef"`
+		} `json:"valueFrom"`
+	} `json:"env"`
+}
+
+type podTemplateVolume struct {
+	Name                  string `json:"name"`
+	EmptyDir              any    `json:"emptyDir"`
+	HostPath              any    `json:"hostPath"`
+	PersistentVolumeClaim *struct {
+		ClaimName string `json:"claimName"`
+	} `json:"persistentVolumeClaim"`
+	ConfigMap *struct {
+		Name string `json:"name"`
+	} `json:"configMap"`
+	Secret *struct {
+		SecretName string `json:"secretName"`
+	} `json:"secret"`
+}
+
+type podTemplatePodSpec struct {
+	Containers []podTemplateContainer `json:"containers"`
+	Volumes    []podTemplateVolume    `json:"volumes"`
+}
+
 type kubeObject struct {
 	Kind     string `json:"kind"`
 	Metadata *struct {
 		Name            string            `json:"name"`
 		Namespace       string            `json:"namespace"`
 		Labels          map[string]string `json:"labels"`
+		Annotations     map[string]string `json:"annotations"`
+		Finalizers      []string          `json:"finalizers"`
 		OwnerReferences []struct {
 			Kind       string `json:"kind"`
 			Name       string `json:"name"`
@@ -105,16 +159,43 @@ type kubeObject struct {
 		} `json:"ownerReferences"`
 	} `json:"metadata"`
 	Spec *struct {
-		Selector       json.RawMessage `json:"selector"`
-		MinReplicas    *int            `json:"minReplicas"`
-		MaxReplicas    *int            `json:"maxReplicas"`
+		Selector                      json.RawMessage        `json:"selector"`
+		MinReplicas                   *int                   `json:"minReplicas"`
+		MaxReplicas                   *int                   `json:"maxReplicas"`
+		Unschedulable                 bool                   `json:"unschedulable"`
+		VolumeName                    string                 `json:"volumeName"`
+		PersistentVolumeReclaimPolicy string                 `json:"persistentVolumeReclaimPolicy"`
+		Containers                    []podTemplateContainer `json:"containers"`
+		Volumes                       []podTemplateVolume    `json:"volumes"`
+		Template                      *struct {
+			Spec *podTemplatePodSpec `json:"spec"`
+		} `json:"template"`
 		ScaleTargetRef *struct {
 			Kind string `json:"kind"`
 			Name string `json:"name"`
 		} `json:"scaleTargetRef"`
+		DefaultBackend *struct {
+			Service *struct {
+				Name string `json:"name"`
+			} `json:"service"`
+		} `json:"defaultBackend"`
+		Rules []struct {
+			Host string `json:"host"`
+			HTTP *struct {
+				Paths []struct {
+					Backend *struct {
+						Service *struct {
+							Name string `json:"name"`
+						} `json:"service"`
+					} `json:"backend"`
+				} `json:"paths"`
+			} `json:"http"`
+		} `json:"rules"`
 	} `json:"spec"`
 	Status *struct {
-		Conditions []struct {
+		Phase       string            `json:"phase"`
+		Allocatable map[string]string `json:"allocatable"`
+		Conditions  []struct {
 			Type   string `json:"type"`
 			Status string `json:"status"`
 		} `json:"conditions"`
@@ -253,6 +334,63 @@ func formatOk(blast Blast) string {
 	}
 	for _, hpa := range blast.HPAs {
 		lines = append(lines, "  hpa/"+hpa.Name+" keeps "+hpa.Target+" between "+strconv.Itoa(hpa.MinReplicas)+" and "+strconv.Itoa(hpa.MaxReplicas))
+	}
+	for _, ing := range blast.Ingresses {
+		hostText := strings.Join(ing.Hosts, ", ")
+		if hostText == "" {
+			hostText = "*"
+		}
+		kind := ing.Kind
+		if kind == "" {
+			kind = "ingress"
+		}
+		lines = append(lines, "  "+kind+"/"+ing.Name+" ("+hostText+") routes to service/"+ing.Service)
+	}
+	for _, pvc := range blast.PVCs {
+		detail := ""
+		if pvc.VolumeName != "" {
+			detail = " pv/" + pvc.VolumeName
+			if pvc.ReclaimPolicy != "" {
+				detail += " reclaim=" + pvc.ReclaimPolicy
+			}
+		}
+		if len(pvc.MountedBy) > 0 {
+			detail += " mounted by " + strings.Join(pvc.MountedBy, ", ")
+		}
+		lines = append(lines, "  pvc/"+pvc.Name+detail)
+	}
+	if blast.Drain != nil {
+		lines = append(lines, "  drain: "+strconv.Itoa(blast.Drain.EvictedPods)+" pods, "+strconv.Itoa(blast.Drain.SchedulableNodesRemaining)+" schedulable nodes remaining")
+		if blast.Drain.EmptyDirPods > 0 {
+			lines = append(lines, "  warning: "+strconv.Itoa(blast.Drain.EmptyDirPods)+" pod(s) use emptyDir/hostPath local storage")
+		}
+		if blast.Drain.CapacityWarning != "" {
+			lines = append(lines, "  warning: "+blast.Drain.CapacityWarning)
+		}
+	}
+	for _, m := range blast.ManagedBy {
+		rel := ""
+		if m.Release != "" {
+			rel = " (" + m.Release + ")"
+		}
+		lines = append(lines, "  warning: "+m.Kind+"/"+m.Name+" is managed by "+m.Manager+rel+"; manual changes may drift or revert")
+	}
+	for _, w := range blast.Warnings {
+		lines = append(lines, "  warning: "+w)
+	}
+	if blast.Diff != nil {
+		switch blast.Diff.Status {
+		case "changed":
+			lines = append(lines, "  diff: +"+strconv.Itoa(blast.Diff.Added)+" -"+strconv.Itoa(blast.Diff.Removed)+" lines")
+		case "unchanged":
+			lines = append(lines, "  diff: unchanged")
+		case "unknown":
+			reason := blast.Diff.Reason
+			if reason == "" {
+				reason = "unavailable"
+			}
+			lines = append(lines, "  diff: unknown ("+reason+")")
+		}
 	}
 	if blast.DryRun != nil && blast.DryRun.Status == "ok" {
 		count := 0
@@ -546,9 +684,14 @@ type fetch struct {
 	getJSON func([]string) live.KubectlJSONResult
 	now     func() int64
 	started int64
+	mu      *sync.Mutex
 }
 
 func expired(f fetch) bool {
+	if f.mu != nil {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+	}
 	return f.now()-f.started >= BlastBudgetMS
 }
 
@@ -737,12 +880,30 @@ func expandControllers(items []kubeObject, controllerObjects []BlastObject, f fe
 		}
 	}
 	podBase := pack(objects, "pod", fallbackNS, named)
-	withServices := attachServices(podBase, pods, f, fallbackNS, a.context, false)
-	if withServices.Status != "ok" {
-		return withServices
+	var wg sync.WaitGroup
+	var svcBlast, pdbBlast, hpaBlast Blast
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		svcBlast = attachServices(podBase, pods, f, fallbackNS, a.context, false)
+		if svcBlast.Status == "ok" {
+			svcBlast = withIngressImpact(svcBlast, nil, f, fallbackNS, a)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		pdbBlast = withPdbs(Blast{}, pods, f, a)
+	}()
+	go func() {
+		defer wg.Done()
+		hpaBlast = withHpas(Blast{Controllers: podBase.Controllers}, f, a)
+	}()
+	wg.Wait()
+	if svcBlast.Status != "ok" {
+		return svcBlast
 	}
-	withServices = remember(withServices, podBase.kind, podBase.namespace, podBase.groups)
-	return withExtras(withServices, pods, f, a)
+	out := remember(svcBlast, podBase.kind, podBase.namespace, podBase.groups)
+	return mergeBlastExtras(out, mergeBlastExtras(pdbBlast, hpaBlast))
 }
 
 func serviceNote(base Blast, errorMsg string) Blast {
@@ -1039,7 +1200,19 @@ func withHpas(blast Blast, f fetch, a asked) Blast {
 }
 
 func withExtras(blast Blast, pods []podRef, f fetch, a asked) Blast {
-	return withHpas(withPdbs(blast, pods, f, a), f, a)
+	var wg sync.WaitGroup
+	var pdbBlast, hpaBlast Blast
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		pdbBlast = withPdbs(Blast{}, pods, f, a)
+	}()
+	go func() {
+		defer wg.Done()
+		hpaBlast = withHpas(Blast{Controllers: blast.Controllers}, f, a)
+	}()
+	wg.Wait()
+	return mergeBlastExtras(blast, mergeBlastExtras(pdbBlast, hpaBlast))
 }
 
 func dryRunArgs(args []string) []string {
@@ -1210,6 +1383,7 @@ func fromItems(items []kubeObject, resource kube.Resource, hasRes bool, a asked,
 		}
 	}
 	partialKind, partialNS := singular, fallbackNS
+	managed, warnings := detectGitOpsAndFinalizers(items, fallbackNS)
 	if len(items) > 0 {
 		allControllers := true
 		for _, item := range items {
@@ -1219,23 +1393,49 @@ func fromItems(items []kubeObject, resource kube.Resource, hasRes bool, a asked,
 			}
 		}
 		if allControllers {
-			return expandControllers(items, objects, f, a, fallbackNS, partialKind, partialNS)
+			res := expandControllers(items, objects, f, a, fallbackNS, partialKind, partialNS)
+			res.ManagedBy = append(res.ManagedBy, managed...)
+			res.Warnings = append(res.Warnings, warnings...)
+			return res
 		}
 	}
-	extra := Blast{}
+	extra := Blast{ManagedBy: managed, Warnings: warnings}
 	if len(owners) > 0 {
 		extra.Owners = owners
 	}
 	base := pack(objects, partialKind, partialNS, extra)
 	hasPodObject := false
+	hasServiceObject := false
+	hasPVCObject := false
 	for _, object := range objects {
-		if object.Kind == "pod" {
+		switch object.Kind {
+		case "pod":
 			hasPodObject = true
-			break
+		case "service":
+			hasServiceObject = true
+		case "pvc", "persistentvolumeclaim":
+			hasPVCObject = true
 		}
 	}
 	if singular != "pod" && !(!hasRes && hasPodObject) {
-		return base
+		var wg sync.WaitGroup
+		var ingBlast, pvcBlast Blast
+		if hasServiceObject {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				ingBlast = withIngressImpact(Blast{}, items, f, fallbackNS, a)
+			}()
+		}
+		if hasPVCObject {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				pvcBlast = withPVCImpact(Blast{}, items, f, fallbackNS, a)
+			}()
+		}
+		wg.Wait()
+		return mergeBlastExtras(base, mergeBlastExtras(ingBlast, pvcBlast))
 	}
 	var pods []podRef
 	for _, item := range items {
@@ -1247,12 +1447,37 @@ func fromItems(items []kubeObject, resource kube.Resource, hasRes bool, a asked,
 			pods = append(pods, pod)
 		}
 	}
-	withServices := attachServices(base, pods, f, fallbackNS, a.context, reuse)
-	if withServices.Status != "ok" {
-		return withServices
+	var wg sync.WaitGroup
+	var svcBlast, pdbBlast, hpaBlast, pvcBlast Blast
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		svcBlast = attachServices(base, pods, f, fallbackNS, a.context, reuse)
+		if svcBlast.Status == "ok" {
+			svcBlast = withIngressImpact(svcBlast, items, f, fallbackNS, a)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		pdbBlast = withPdbs(Blast{}, pods, f, a)
+	}()
+	go func() {
+		defer wg.Done()
+		hpaBlast = withHpas(Blast{Controllers: base.Controllers}, f, a)
+	}()
+	if hasPVCObject {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pvcBlast = withPVCImpact(Blast{}, items, f, fallbackNS, a)
+		}()
 	}
-	withServices = remember(withServices, base.kind, base.namespace, base.groups)
-	return withExtras(withServices, pods, f, a)
+	wg.Wait()
+	if svcBlast.Status != "ok" {
+		return svcBlast
+	}
+	out := remember(svcBlast, base.kind, base.namespace, base.groups)
+	return mergeBlastExtras(out, mergeBlastExtras(pdbBlast, mergeBlastExtras(hpaBlast, pvcBlast)))
 }
 
 func isKustomize(args []string) bool {
@@ -1399,7 +1624,19 @@ func blastDrain(args []string, plan kube.Plan, f fetch, a asked) Blast {
 	if a.namespace != "" && !a.allNamespaces {
 		scope = []string{"-n", a.namespace}
 	}
-	result, ok := fetchJSON(f, jsonArgs("pods", []string{"--field-selector", "spec.nodeName=" + node}, withContext(scope, a.context)))
+	var wg sync.WaitGroup
+	var result, nodesRes live.KubectlJSONResult
+	var ok, nodesOK bool
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		result, ok = fetchJSON(f, jsonArgs("pods", []string{"--field-selector", "spec.nodeName=" + node}, withContext(scope, a.context)))
+	}()
+	go func() {
+		defer wg.Done()
+		nodesRes, nodesOK = fetchJSON(f, jsonArgs("nodes", nil, withContext(nil, a.context)))
+	}()
+	wg.Wait()
 	if !ok {
 		return unknown("timed out")
 	}
@@ -1421,16 +1658,25 @@ func blastDrain(args []string, plan kube.Plan, f fetch, a asked) Blast {
 		}
 	}
 	res, _ := parse.ResolveResource("pod")
-	return fromItems(filtered, res, true, a, f, fallbackNS, false)
+	out := fromItems(filtered, res, true, a, f, fallbackNS, false)
+	if out.Status == "ok" {
+		out.Drain = evaluateDrainCapacity(node, filtered, nodesRes, nodesOK)
+	}
+	return out
 }
 
 // BlastRadius expands a mutating plan into the objects that would be affected.
 func BlastRadius(plan kube.Plan, args []string, getJSON func([]string) live.KubectlJSONResult, now func() int64) Blast {
+	return BlastRadiusWithOptions(plan, args, getJSON, now, BlastOptions{})
+}
+
+// BlastRadiusWithOptions expands a mutating plan with optional diff preflight checks.
+func BlastRadiusWithOptions(plan kube.Plan, args []string, getJSON func([]string) live.KubectlJSONResult, now func() int64, opts BlastOptions) Blast {
 	if now == nil {
 		now = func() int64 { return time.Now().UnixMilli() }
 	}
 	started := now()
-	f := fetch{getJSON: getJSON, now: now, started: started}
+	f := fetch{getJSON: getJSON, now: now, started: started, mu: &sync.Mutex{}}
 	a := askedOf(args)
 	scaleZero := false
 	if plan.Verb == "scale" {
@@ -1440,6 +1686,9 @@ func BlastRadius(plan kube.Plan, args []string, getJSON func([]string) live.Kube
 	}
 	if plan.Verb == "drain" {
 		return blastDrain(args, plan, f, a)
+	}
+	if (plan.Verb == "apply" || plan.Verb == "replace" || plan.Verb == "patch") && plan.Mutating && !dryRun(args) {
+		return blastMutatePreflight(plan, args, f, a, opts)
 	}
 	if plan.Verb != "delete" && !scaleZero {
 		return skipped("not a delete")
@@ -1455,7 +1704,25 @@ func BlastRadius(plan kube.Plan, args []string, getJSON func([]string) live.Kube
 		}
 	}
 	if len(files) > 0 {
-		return withDryRun(blastFiles(files, plan, a, f), args, f)
+		var wg sync.WaitGroup
+		var mainBlast, dryBlast Blast
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			mainBlast = blastFiles(files, plan, a, f)
+		}()
+		if plan.Verb == "delete" {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				dryBlast = withDryRun(Blast{}, args, f)
+			}()
+		}
+		wg.Wait()
+		if mainBlast.Status != "ok" {
+			return mainBlast
+		}
+		return mergeBlastExtras(mainBlast, dryBlast)
 	}
 	tgt, kind := targetOf(args)
 	if kind == "mixed" {
@@ -1500,6 +1767,23 @@ func BlastRadius(plan kube.Plan, args []string, getJSON func([]string) live.Kube
 		fallbackNS = plan.Namespace
 	}
 	reuse := tgt.all && (tgt.hasRes && tgt.resource.Singular == "pod" || tgt.token == "pods" || tgt.token == "pod")
-	finished := fromItems(items, tgt.resource, tgt.hasRes, a, f, fallbackNS, reuse)
-	return withDryRun(finished, args, f)
+	var wg sync.WaitGroup
+	var finished, dryBlast Blast
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		finished = fromItems(items, tgt.resource, tgt.hasRes, a, f, fallbackNS, reuse)
+	}()
+	if plan.Verb == "delete" {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			dryBlast = withDryRun(Blast{}, args, f)
+		}()
+	}
+	wg.Wait()
+	if finished.Status != "ok" {
+		return finished
+	}
+	return mergeBlastExtras(finished, dryBlast)
 }
